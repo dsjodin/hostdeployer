@@ -6,6 +6,7 @@ webbgränssnitt för att godkänna och konfigurera servrar.
 ## Dokumentation
 
 - [`docs/CODE-REVIEW.md`](docs/CODE-REVIEW.md) — granskning och genomförda åtgärder
+- [`docs/PLAN-via-go-port.md`](docs/PLAN-via-go-port.md) — plan för att hämta hem via_go:s styrkor
 - [`docs/bootchain.md`](docs/bootchain.md) — bootkedjan steg för steg + felsökning
 - [`docs/dhcp-kea.md`](docs/dhcp-kea.md) — migrering från ISC dhcpd till Kea
 
