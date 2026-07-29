@@ -1,9 +1,10 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
 /**
  * ESXi Auto-deployment Admin - Hosts Tab
+ *
+ * Note: this file must not enable display_errors. It used to, which meant
+ * including it silently switched the whole dashboard into a mode where PHP
+ * warnings and stack traces were rendered into the page.
  */
 
 // Ensure this file is included from admin_dashboard.php, not accessed directly
@@ -43,6 +44,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                 </div>
                 <div class="card-body">
                     <form id="add-host-form" method="post" action="" class="needs-validation" novalidate>
+                        <?php echo csrfField(); ?>
                         <input type="hidden" name="action" value="add_host">
                         
                         <div class="row">
@@ -105,7 +107,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                         <div class="row">
                             <div class="col-md-3 mb-3">
                                 <label for="vlan_mgmt" class="form-label">ESX Management VLAN:</label>
-                                <input type="number" class="form-control" id="vlan_mgmt" name="vlan_mgmt" min="0" max="4095" value="0">
+                                <input type="number" class="form-control" id="vlan_mgmt" name="vlan_mgmt" min="0" max="4094" value="0">
                             </div>
                             
                             <div class="col-md-3 mb-3">
@@ -130,7 +132,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                             <div class="row">
                                 <div class="col-md-4 mb-3">
                                     <label for="vlan_vmotion" class="form-label">vMotion VLAN:</label>
-                                    <input type="number" class="form-control" id="vlan_vmotion" name="vlan_vmotion" min="0" max="4095" value="0">
+                                    <input type="number" class="form-control" id="vlan_vmotion" name="vlan_vmotion" min="0" max="4094" value="0">
                                 </div>
                                 
                                 <div class="col-md-4 mb-3">
@@ -259,9 +261,9 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                         <tbody>
                             <?php foreach ($approvedHosts as $host): ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($host['hostname']); ?></td>
-                                <td><?php echo htmlspecialchars(formatMac($host['mac_address'])); ?></td>
-                                <td><?php echo htmlspecialchars($host['management_ip']); ?></td>
+                                <td><?php echo h($host['hostname']); ?></td>
+                                <td><?php echo h(formatMac($host['mac_address'])); ?></td>
+                                <td><?php echo h($host['management_ip']); ?></td>
                                 <td>
                                     <?php if (($host['secure_boot_status'] ?? '') === 'enabled'): ?>
                                         <span class="badge bg-success">Enabled</span>
@@ -273,36 +275,37 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                                 </td>
                                 <td>
                                     <div class="btn-group btn-group-sm">
-                                        <button class="btn btn-primary" onclick="editHost(
-                                            '<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>', 
-                                            '<?php echo htmlspecialchars($host['fqdn'] ?? $host['hostname'] . '.local'); ?>', 
-                                            '<?php echo htmlspecialchars($host['serial_number'] ?? ''); ?>', 
-                                            '<?php echo htmlspecialchars($host['ilo_ip'] ?? ''); ?>', 
-                                            '<?php echo htmlspecialchars($host['management_ip']); ?>', 
-                                            '<?php echo htmlspecialchars($host['management_netmask']); ?>', 
-                                            '<?php echo htmlspecialchars($host['management_gateway']); ?>',
-                                            '<?php echo htmlspecialchars($host['vlans']['management'] ?? 0); ?>',
-                                            '<?php echo htmlspecialchars($host['vlans']['vmotion'] ?? 0); ?>',
-                                            '<?php echo htmlspecialchars($host['vmotion_ip'] ?? ''); ?>',
-                                            '<?php echo htmlspecialchars($host['vmotion_netmask'] ?? '255.255.255.0'); ?>',
-                                            '<?php echo htmlspecialchars($host['deployment_type'] ?? 'standard'); ?>'
-                                        )">
+                                        <button class="btn btn-primary" data-edit-host="<?php echo jsValue([
+                                            'mac'             => formatMac($host['mac_address']),
+                                            'fqdn'            => $host['fqdn'] ?: (($host['hostname'] ?? 'esxi') . '.local'),
+                                            'serial'          => $host['serial_number'] ?? '',
+                                            'iloIp'           => $host['ilo_ip'] ?? '',
+                                            'mgmtIp'          => $host['management_ip'] ?? '',
+                                            'mgmtNetmask'     => $host['management_netmask'] ?? '255.255.255.0',
+                                            'mgmtGateway'     => $host['management_gateway'] ?? '',
+                                            'vlanMgmt'        => (int)($host['vlans']['management'] ?? 0),
+                                            'vlanVmotion'     => (int)($host['vlans']['vmotion'] ?? 0),
+                                            'vmotionIp'       => $host['vmotion_ip'] ?? '',
+                                            'vmotionNetmask'  => $host['vmotion_netmask'] ?? '255.255.255.0',
+                                            'deploymentType'  => $host['deployment_type'] ?? 'standard',
+                                            'esxiVersion'     => $host['esxi_version'] ?? '',
+                                        ]); ?>">
                                             <i class="fas fa-edit"></i> Edit
                                         </button>
                                         
                                         <?php if (($host['secure_boot_status'] ?? '') !== 'disabled'): ?>
-                                        <form method="post" style="display: inline">
+                                        <form method="post" style="display: inline"><?php echo csrfField(); ?>
                                             <input type="hidden" name="action" value="toggle_secure_boot">
-                                            <input type="hidden" name="mac" value="<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>">
+                                            <input type="hidden" name="mac" value="<?php echo h(formatMac($host['mac_address'])); ?>">
                                             <input type="hidden" name="secure_boot" value="disable">
                                             <button type="submit" class="btn btn-warning" data-confirm="Are you sure you want to disable secure boot for this host?">
                                                 <i class="fas fa-shield-alt"></i> Disable SB
                                             </button>
                                         </form>
                                         <?php else: ?>
-                                        <form method="post" style="display: inline">
+                                        <form method="post" style="display: inline"><?php echo csrfField(); ?>
                                             <input type="hidden" name="action" value="toggle_secure_boot">
-                                            <input type="hidden" name="mac" value="<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>">
+                                            <input type="hidden" name="mac" value="<?php echo h(formatMac($host['mac_address'])); ?>">
                                             <input type="hidden" name="secure_boot" value="enable">
                                             <button type="submit" class="btn btn-success" data-confirm="Are you sure you want to enable secure boot for this host?">
                                                 <i class="fas fa-shield-alt"></i> Enable SB
@@ -310,7 +313,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                                         </form>
                                         <?php endif; ?>
                                         
-                                        <button class="btn btn-danger" onclick="confirmDeleteHost('<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>', '<?php echo htmlspecialchars($host['hostname']); ?>')">
+                                        <button class="btn btn-danger" data-delete-host="<?php echo jsValue(['mac' => formatMac($host['mac_address']), 'hostname' => $host['hostname'] ?? '']); ?>">
                                             <i class="fas fa-trash-alt"></i> Delete
                                         </button>
                                     </div>
@@ -343,20 +346,20 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                         <tbody>
                             <?php foreach ($pendingHosts as $host): ?>
                             <tr>
-                                <td><?php echo htmlspecialchars(formatMac($host['mac_address'])); ?></td>
-                                <td><?php echo htmlspecialchars($host['serial_number'] ?? 'Unknown'); ?></td>
-                                <td><?php echo htmlspecialchars($host['last_seen'] ?? 'Unknown'); ?></td>
+                                <td><?php echo h(formatMac($host['mac_address'])); ?></td>
+                                <td><?php echo h($host['serial_number'] ?? 'Unknown'); ?></td>
+                                <td><?php echo h($host['last_seen'] ?? 'Unknown'); ?></td>
                                 <td>
                                     <div class="btn-group btn-group-sm">
-                                        <button class="btn btn-success" onclick="showApproveForm(
-                                            '<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>', 
-                                            '<?php echo htmlspecialchars($host['hostname'] ?? 'esxi-' . substr(str_replace(':', '', formatMac($host['mac_address'])), -6)); ?>', 
-                                            '<?php echo htmlspecialchars($host['serial_number'] ?? ''); ?>'
-                                        )">
+                                        <button class="btn btn-success" data-approve-host="<?php echo jsValue([
+                                            'mac'      => formatMac($host['mac_address']),
+                                            'hostname' => $host['hostname'] ?: ('esxi-' . substr(str_replace(':', '', formatMac($host['mac_address'])), -6)),
+                                            'serial'   => $host['serial_number'] ?? '',
+                                        ]); ?>">
                                             <i class="fas fa-check-circle"></i> Configure & Approve
                                         </button>
                                         
-                                        <button class="btn btn-danger" onclick="confirmDeleteHost('<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>', 'Pending host')">
+                                        <button class="btn btn-danger" data-delete-host="<?php echo jsValue(['mac' => formatMac($host['mac_address']), 'hostname' => 'Pending host']); ?>">
                                             <i class="fas fa-trash-alt"></i> Delete
                                         </button>
                                     </div>
@@ -391,9 +394,9 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                         <tbody>
                             <?php foreach (array_merge($deployingHosts, $deployedHosts) as $host): ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($host['hostname']); ?></td>
-                                <td><?php echo htmlspecialchars(formatMac($host['mac_address'])); ?></td>
-                                <td><?php echo htmlspecialchars($host['management_ip']); ?></td>
+                                <td><?php echo h($host['hostname']); ?></td>
+                                <td><?php echo h(formatMac($host['mac_address'])); ?></td>
+                                <td><?php echo h($host['management_ip']); ?></td>
                                 <td>
                                     <?php if ($host['deployment_status'] === 'deploying'): ?>
                                         <span class="badge bg-primary">Deploying</span>
@@ -404,42 +407,43 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                                 <td>
                                     <?php 
                                     if ($host['deployment_status'] === 'deploying') {
-                                        echo htmlspecialchars($host['deployment_started'] ?? 'Unknown');
+                                        echo h($host['deployment_started'] ?? 'Unknown');
                                     } else {
-                                        echo htmlspecialchars($host['deployment_time'] ?? 'Unknown');
+                                        echo h($host['deployment_time'] ?? 'Unknown');
                                     }
                                     ?>
                                 </td>
                                 <td>
                                     <div class="btn-group btn-group-sm">
-                                        <button class="btn btn-primary" onclick="editHost(
-                                            '<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>', 
-                                            '<?php echo htmlspecialchars($host['fqdn'] ?? $host['hostname'] . '.local'); ?>', 
-                                            '<?php echo htmlspecialchars($host['serial_number'] ?? ''); ?>', 
-                                            '<?php echo htmlspecialchars($host['ilo_ip'] ?? ''); ?>', 
-                                            '<?php echo htmlspecialchars($host['management_ip']); ?>', 
-                                            '<?php echo htmlspecialchars($host['management_netmask']); ?>', 
-                                            '<?php echo htmlspecialchars($host['management_gateway']); ?>',
-                                            '<?php echo htmlspecialchars($host['vlans']['management'] ?? 0); ?>',
-                                            '<?php echo htmlspecialchars($host['vlans']['vmotion'] ?? 0); ?>',
-                                            '<?php echo htmlspecialchars($host['vmotion_ip'] ?? ''); ?>',
-                                            '<?php echo htmlspecialchars($host['vmotion_netmask'] ?? '255.255.255.0'); ?>',
-                                            '<?php echo htmlspecialchars($host['deployment_type'] ?? 'standard'); ?>'
-                                        )">
+                                        <button class="btn btn-primary" data-edit-host="<?php echo jsValue([
+                                            'mac'             => formatMac($host['mac_address']),
+                                            'fqdn'            => $host['fqdn'] ?: (($host['hostname'] ?? 'esxi') . '.local'),
+                                            'serial'          => $host['serial_number'] ?? '',
+                                            'iloIp'           => $host['ilo_ip'] ?? '',
+                                            'mgmtIp'          => $host['management_ip'] ?? '',
+                                            'mgmtNetmask'     => $host['management_netmask'] ?? '255.255.255.0',
+                                            'mgmtGateway'     => $host['management_gateway'] ?? '',
+                                            'vlanMgmt'        => (int)($host['vlans']['management'] ?? 0),
+                                            'vlanVmotion'     => (int)($host['vlans']['vmotion'] ?? 0),
+                                            'vmotionIp'       => $host['vmotion_ip'] ?? '',
+                                            'vmotionNetmask'  => $host['vmotion_netmask'] ?? '255.255.255.0',
+                                            'deploymentType'  => $host['deployment_type'] ?? 'standard',
+                                            'esxiVersion'     => $host['esxi_version'] ?? '',
+                                        ]); ?>">
                                             <i class="fas fa-edit"></i> Edit
                                         </button>
                                         
                                         <?php if ($host['deployment_status'] === 'deployed'): ?>
-                                        <form method="post" style="display: inline">
+                                        <form method="post" style="display: inline"><?php echo csrfField(); ?>
                                             <input type="hidden" name="action" value="reinstall_host">
-                                            <input type="hidden" name="mac" value="<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>">
+                                            <input type="hidden" name="mac" value="<?php echo h(formatMac($host['mac_address'])); ?>">
                                             <button type="submit" class="btn btn-warning" data-confirm="Are you sure you want to reinstall this host? It will need to be PXE booted again.">
                                                 <i class="fas fa-sync-alt"></i> Reinstall
                                             </button>
                                         </form>
                                         <?php endif; ?>
                                         
-                                        <button class="btn btn-danger" onclick="confirmDeleteHost('<?php echo htmlspecialchars(formatMac($host['mac_address'])); ?>', '<?php echo htmlspecialchars($host['hostname']); ?>')">
+                                        <button class="btn btn-danger" data-delete-host="<?php echo jsValue(['mac' => formatMac($host['mac_address']), 'hostname' => $host['hostname'] ?? '']); ?>">
                                             <i class="fas fa-trash-alt"></i> Delete
                                         </button>
                                     </div>
@@ -457,6 +461,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
     
     <!-- Delete host form (hidden) -->
     <form id="delete-host-form" method="post" style="display: none;">
+        <?php echo csrfField(); ?>
         <input type="hidden" name="action" value="delete_host">
         <input type="hidden" name="mac" id="delete-mac">
     </form>
@@ -471,6 +476,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
             </div>
             <div class="modal-body">
                 <form method="post" id="approve-host-form">
+                    <?php echo csrfField(); ?>
                     <input type="hidden" name="action" value="approve_host">
                     <input type="hidden" name="mac" id="approve-mac">
                     
@@ -513,7 +519,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                     <div class="row mb-3">
                         <div class="col-md-4">
                             <label for="approve-vlan-mgmt" class="form-label">ESX Management VLAN:</label>
-                            <input type="number" class="form-control" id="approve-vlan-mgmt" name="vlan_mgmt" min="0" max="4095" value="0">
+                            <input type="number" class="form-control" id="approve-vlan-mgmt" name="vlan_mgmt" min="0" max="4094" value="0">
                         </div>
                         
                         <div class="col-md-8 row">
@@ -538,7 +544,7 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                         <div class="row mb-3">
                             <div class="col-md-4">
                                 <label for="approve-vlan-vmotion" class="form-label">vMotion VLAN:</label>
-                                <input type="number" class="form-control" id="approve-vlan-vmotion" name="vlan_vmotion" min="0" max="4095" value="0">
+                                <input type="number" class="form-control" id="approve-vlan-vmotion" name="vlan_vmotion" min="0" max="4094" value="0">
                             </div>
                             
                             <div class="col-md-4">

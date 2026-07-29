@@ -21,9 +21,14 @@ function renderHeader() {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ESXi Auto-deployment Admin Dashboard</title>
+    <!-- Bootstrap must load first: the whole dashboard markup uses Bootstrap 5
+         classes (cards, grid, tabs, modals) but the stylesheet was never
+         linked, so the layout rendered unstyled. -->
+    <link rel="stylesheet" href="css/bootstrap.min.css">
     <link rel="stylesheet" href="admin_styles.css">
     <!-- Include font-awesome icons from local path -->
     <link rel="stylesheet" href="css/all.min.css">
+    <link rel="stylesheet" href="css/bootstrap-icons.css">
 </head>
 <body>
     <div class="wrapper">
@@ -79,9 +84,10 @@ function renderHeader() {
                 <div class="user-controls">
                     <span class="user-info">
                         <i class="fas fa-user-circle"></i>
-                        <?php echo htmlspecialchars($_SESSION['username']); ?>
+                        <?php echo h($_SESSION['username'] ?? ''); ?>
                     </span>
                     <form method="post" style="display: inline;">
+                        <?php echo csrfField(); ?>
                         <input type="hidden" name="action" value="logout">
                         <button type="submit" class="btn btn-sm btn-outline-secondary">
                             <i class="fas fa-sign-out-alt"></i> Logout
@@ -347,6 +353,33 @@ function renderFooter() {
 
     // Global functions (outside DOMContentLoaded)
 
+    // Host data now arrives through data-* attributes as JSON rather than
+    // being interpolated into inline onclick handlers, so a hostname
+    // containing a quote can no longer break out into script context.
+    document.addEventListener('click', function (event) {
+        const editButton = event.target.closest('[data-edit-host]');
+        if (editButton) {
+            event.preventDefault();
+            editHost(JSON.parse(editButton.getAttribute('data-edit-host')));
+            return;
+        }
+
+        const deleteButton = event.target.closest('[data-delete-host]');
+        if (deleteButton) {
+            event.preventDefault();
+            const host = JSON.parse(deleteButton.getAttribute('data-delete-host'));
+            confirmDeleteHost(host.mac, host.hostname);
+            return;
+        }
+
+        const approveButton = event.target.closest('[data-approve-host]');
+        if (approveButton) {
+            event.preventDefault();
+            const host = JSON.parse(approveButton.getAttribute('data-approve-host'));
+            showApproveForm(host.mac, host.hostname, host.serial);
+        }
+    });
+
     // Function to show host delete confirmation
     function confirmDeleteHost(mac, hostname) {
         if (confirm(`Are you sure you want to delete host ${hostname} (${mac})?`)) {
@@ -356,44 +389,49 @@ function renderFooter() {
     }
 
     // Function to edit a host
-    function editHost(mac, fqdn, serial, iloIp, mgmtIp, mgmtNetmask, mgmtGateway, vlanMgmt, vlanVmotion, vmotionIp, vmotionNetmask, deploymentType) {
+    function editHost(host) {
         const form = document.getElementById('add-host-form');
         const formCard = document.getElementById('add-host-card');
-        
-        // Set form values
-        form.querySelector('[name="mac"]').value = mac || '';
-        form.querySelector('[name="fqdn"]').value = fqdn || '';
-        form.querySelector('[name="hostname"]').value = fqdn ? fqdn.split('.')[0] : '';
-        form.querySelector('[name="serial"]').value = serial || '';
-        form.querySelector('[name="ilo_ip"]').value = iloIp || '';
-        form.querySelector('[name="management_ip"]').value = mgmtIp || '';
-        form.querySelector('[name="management_netmask"]').value = mgmtNetmask || '255.255.255.0';
-        form.querySelector('[name="management_gateway"]').value = mgmtGateway || '';
-        form.querySelector('[name="vlan_mgmt"]').value = vlanMgmt || '0';
-        form.querySelector('[name="vlan_vmotion"]').value = vlanVmotion || '0';
-        form.querySelector('[name="vmotion_ip"]').value = vmotionIp || '';
-        form.querySelector('[name="vmotion_netmask"]').value = vmotionNetmask || '255.255.255.0';
-        form.querySelector('[name="deployment_type"]').value = deploymentType || 'standard';
-        
+        if (!form || !formCard) return;
+
+        const set = function (name, value) {
+            const field = form.querySelector('[name="' + name + '"]');
+            if (field) field.value = value;
+        };
+
+        const fqdn = host.fqdn || '';
+
+        set('mac', host.mac || '');
+        set('fqdn', fqdn);
+        set('hostname', fqdn ? fqdn.split('.')[0] : '');
+        set('serial', host.serial || '');
+        set('ilo_ip', host.iloIp || '');
+        set('management_ip', host.mgmtIp || '');
+        set('management_netmask', host.mgmtNetmask || '255.255.255.0');
+        set('management_gateway', host.mgmtGateway || '');
+        set('vlan_mgmt', host.vlanMgmt || '0');
+        set('vlan_vmotion', host.vlanVmotion || '0');
+        set('vmotion_ip', host.vmotionIp || '');
+        set('vmotion_netmask', host.vmotionNetmask || '255.255.255.0');
+        set('deployment_type', host.deploymentType || 'standard');
+        if (host.esxiVersion) set('esxi_version', host.esxiVersion);
+
         // Trigger change event to update field visibility
-        const event = new Event('change');
-        form.querySelector('[name="deployment_type"]').dispatchEvent(event);
-        
-        // Show the form
+        const deploymentTypeField = form.querySelector('[name="deployment_type"]');
+        if (deploymentTypeField) {
+            deploymentTypeField.dispatchEvent(new Event('change'));
+        }
+
         formCard.style.display = 'block';
-        
-        // Set form title based on edit/add
         document.getElementById('host-form-title').textContent = 'Edit Host';
-        
-        // Focus the form
-        form.querySelector('[name="fqdn"]').focus();
-        
-        // Scroll to form
+
+        const fqdnField = form.querySelector('[name="fqdn"]');
+        if (fqdnField) fqdnField.focus();
+
         formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     // Function to display the approval modal for pending hosts
-// Function to display the approval modal for pending hosts
 function showApproveForm(mac, hostname, serial) {
     // Get the modal element
     const approveModal = document.getElementById('approveModal');
@@ -414,7 +452,7 @@ function showApproveForm(mac, hostname, serial) {
     if (macInput) macInput.value = mac;
     if (macDisplay) macDisplay.textContent = mac;
     if (hostnameInput) hostnameInput.value = hostname || ('esxi-' + mac.replace(/:/g, '').substr(-6));
-    if (serialDisplay) serialDisplay.innerHTML = serial || '<em>Unknown</em>';
+    if (serialDisplay) serialDisplay.textContent = serial || 'Unknown';
     
     // Set FQDN based on hostname
     if (hostnameInput && fqdnInput) {
@@ -484,17 +522,8 @@ function showApproveForm(mac, hostname, serial) {
             })
             .then(data => {
                 const logContent = document.getElementById('log-content');
-                logContent.textContent = data;
-                
-                // Apply syntax highlighting
-                const htmlContent = logContent.innerHTML
-                    .replace(/\[INFO\]/g, '<span class="log-info">[INFO]</span>')
-                    .replace(/\[WARNING\]/g, '<span class="log-warning">[WARNING]</span>')
-                    .replace(/\[ERROR\]/g, '<span class="log-error">[ERROR]</span>')
-                    .replace(/\[([\d-]+ [\d:]+)\]/g, '[<span class="log-timestamp">$1</span>]');
-                
-                logContent.innerHTML = htmlContent;
-                
+                renderLogLines(logContent, data.split('\n'));
+
                 // Scroll to bottom (most recent logs)
                 logContent.scrollTop = logContent.scrollHeight;
             })
@@ -550,6 +579,45 @@ function showApproveForm(mac, hostname, serial) {
         window.location.href = 'get_log.php?file=' + encodeURIComponent(logFileSelect.value) + '&download=1';
     }
 
+
+    // Render log lines with level highlighting without ever handing raw log
+    // text to innerHTML: log files contain values supplied by PXE clients.
+    function renderLogLines(container, lines) {
+        container.textContent = '';
+        const pattern = /(\[(?:INFO|WARNING|ERROR|DEBUG)\])|(\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\])/g;
+
+        lines.forEach(function (line, index) {
+            if (index > 0) {
+                container.appendChild(document.createElement('br'));
+            }
+
+            let lastIndex = 0;
+            let match;
+            pattern.lastIndex = 0;
+
+            while ((match = pattern.exec(line)) !== null) {
+                if (match.index > lastIndex) {
+                    container.appendChild(document.createTextNode(line.slice(lastIndex, match.index)));
+                }
+
+                const span = document.createElement('span');
+                if (match[1]) {
+                    span.className = 'log-' + match[1].slice(1, -1).toLowerCase();
+                } else {
+                    span.className = 'log-timestamp';
+                }
+                span.textContent = match[0];
+                container.appendChild(span);
+
+                lastIndex = match.index + match[0].length;
+            }
+
+            if (lastIndex < line.length) {
+                container.appendChild(document.createTextNode(line.slice(lastIndex)));
+            }
+        });
+    }
+
     // Update the recent activity display on the dashboard
     function updateRecentActivity() {
         const recentActivityElement = document.querySelector('.log-preview');
@@ -573,22 +641,13 @@ function showApproveForm(mac, hostname, serial) {
                     const recentLogs = logLines.slice(-15);
                     
                     if (recentLogs.length === 0) {
-                        recentActivityElement.innerHTML = '<p>No recent activity found.</p>';
+                        recentActivityElement.textContent = 'No recent activity found.';
                     } else {
-                        const formattedLogs = recentLogs.map(line => {
-                            // Add syntax highlighting
-                            return line
-                                .replace(/\[INFO\]/g, '<span class="log-info">[INFO]</span>')
-                                .replace(/\[WARNING\]/g, '<span class="log-warning">[WARNING]</span>')
-                                .replace(/\[ERROR\]/g, '<span class="log-error">[ERROR]</span>')
-                                .replace(/\[([\d-]+ [\d:]+)\]/g, '[<span class="log-timestamp">$1</span>]');
-                        }).join('<br>');
-                        
-                        recentActivityElement.innerHTML = formattedLogs;
+                        renderLogLines(recentActivityElement, recentLogs);
                     }
                 })
                 .catch(error => {
-                    recentActivityElement.innerHTML = '<p class="text-danger">Error loading recent activity: ' + error.message + '</p>';
+                    recentActivityElement.textContent = 'Error loading recent activity: ' + error.message;
                 });
         }
     }

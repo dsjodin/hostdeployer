@@ -1,433 +1,494 @@
 <?php
 /**
  * ESXi Auto-deployment - Host Management Functions
- * 
- * Functions for managing hosts, including adding, editing, and deleting hosts
+ *
+ * Add / edit / approve / delete / reinstall hosts, plus per-host credentials.
  */
 
-/**
-* Process add/edit host action with vMotion support and custom credentials
-* 
-* @param array $postData Form data from POST
-* @return array Result with message/error information
-*/
-function processAddHostAction($postData) {
-   $result = [
-       'message' => '',
-       'error' => ''
-   ];
-   
-   $hostsConfigPath = '/srv/autodeploy/config/hosts.json';
-   $globalConfigPath = '/srv/autodeploy/config/global_config.json';
-   
-   $hostsConfig = loadJsonConfig($hostsConfigPath);
-   $globalConfig = loadJsonConfig($globalConfigPath);
-   
-   if (!$hostsConfig) {
-       $result['error'] = "Cannot add host - hosts configuration file not found";
-       return $result;
-   }
-   
-   $mac = formatMac($postData['mac']);
-   $fqdn = $postData['fqdn'];
-   $hostname = $postData['hostname'] ?: extractHostnameFromFQDN($fqdn);
-   $managementIp = $postData['management_ip'];
-   $managementNetmask = $postData['management_netmask'];
-   $managementGateway = $postData['management_gateway'];
-   $deploymentType = $postData['deployment_type'] ?? 'standard';
-   
-   // Add vMotion fields
-   $vmotionIp = $postData['vmotion_ip'] ?? '';
-   $vmotionNetmask = $postData['vmotion_netmask'] ?? '255.255.255.0';
-   
-   // Validate inputs
-   if (empty($mac) || empty($fqdn) || empty($managementIp)) {
-       $result['error'] = "MAC address, FQDN, and ESX management IP are required";
-       return $result;
-   }
-   
-   if (!isValidIp($managementIp)) {
-       $result['error'] = "Invalid ESX management IP address";
-       return $result;
-   }
-   
-   // Validate vMotion IP if provided
-   if (!empty($vmotionIp) && !isValidIp($vmotionIp)) {
-       $result['error'] = "Invalid vMotion IP address";
-       return $result;
-   }
-   
-   // Check if host already exists
-   $existingHost = null;
-   $existingIndex = -1;
-   
-   foreach ($hostsConfig['hosts'] as $index => $host) {
-       if (formatMac($host['mac_address']) === $mac) {
-           $existingHost = $host;
-           $existingIndex = $index;
-           break;
-       }
-   }
-   
-   // Set up VLANs based on deployment type
-   $vlans = [
-       'management' => (int)($postData['vlan_mgmt'] ?? 0),
-       'vmotion' => 0,
-       'storage' => 0
-   ];
-   
-   // Only set vMotion VLAN for standard deployments
-   if ($deploymentType === 'standard') {
-       $vlans['vmotion'] = (int)($postData['vlan_vmotion'] ?? 0);
-   }
-   
-   // Create or update host entry
-   $hostEntry = [
-       'mac_address' => $mac,
-       'hostname' => $hostname,
-       'esxi_version' => $postData['esxi_version'] ?? $globalConfig['deployment']['default_version'],
-       'fqdn' => $fqdn,
-       'serial_number' => $postData['serial'] ?: null,
-       'ilo_ip' => $postData['ilo_ip'] ?: null,
-       'management_ip' => $managementIp,
-       'management_netmask' => $managementNetmask,
-       'management_gateway' => $managementGateway,
-       'vlans' => $vlans,
-       'vmotion_ip' => $vmotionIp,
-       'vmotion_netmask' => $vmotionNetmask,
-       'datastore' => [
-           'name' => 'datastore1',
-           'drives' => []
-       ],
-       'deployment_type' => $deploymentType,
-       'secure_boot_status' => $existingHost['secure_boot_status'] ?? 'unknown',
-       'deployment_status' => 'approved',
-       'last_updated' => date('Y-m-d H:i:s')
-   ];
-   
-   // Add or update the host
-   if ($existingIndex >= 0) {
-       $hostsConfig['hosts'][$existingIndex] = $hostEntry;
-       $result['message'] = "Host '$hostname' updated successfully";
-   } else {
-       $hostsConfig['hosts'][] = $hostEntry;
-       $result['message'] = "Host '$hostname' added successfully";
-   }
-   
-   // Save the updated hosts configuration
-   if (!saveJsonConfig($hostsConfigPath, $hostsConfig)) {
-       $result['error'] = "Failed to save hosts configuration";
-       $result['message'] = '';
-       return $result;
-   }
-   
-   // Handle custom credentials if enabled
-   // Load existing credentials
-   $credentials = loadSecureCredentials();
-   if (!$credentials) {
-       $credentials = [
-           'ilo' => ['hosts' => []],
-           'esxi' => ['hosts' => []]
-       ];
-   }
-   
-   // Ensure structure exists
-   if (!isset($credentials['ilo']['hosts'])) {
-       $credentials['ilo']['hosts'] = [];
-   }
-   
-   if (!isset($credentials['esxi']['hosts'])) {
-       $credentials['esxi']['hosts'] = [];
-   }
-   
-   // Process iLO credentials
-   if (isset($postData['use_custom_ilo'])) {
-       $iloUsername = $postData['ilo_username'] ?? '';
-       $iloPassword = $postData['ilo_password'] ?? '';
-       
-       if (!empty($iloUsername) || !empty($iloPassword)) {
-           $credentials['ilo']['hosts'][$mac] = [
-               'username' => $iloUsername,
-               'password' => $iloPassword
-           ];
-       } else {
-           // Remove custom credentials if empty
-           if (isset($credentials['ilo']['hosts'][$mac])) {
-               unset($credentials['ilo']['hosts'][$mac]);
-           }
-       }
-   } else {
-       // Remove any existing custom credentials
-       if (isset($credentials['ilo']['hosts'][$mac])) {
-           unset($credentials['ilo']['hosts'][$mac]);
-       }
-   }
-   
-   // Process ESXi credentials
-   if (isset($postData['use_custom_esxi'])) {
-       $esxiPassword = $postData['esxi_password'] ?? '';
-       
-       if (!empty($esxiPassword)) {
-           $credentials['esxi']['hosts'][$mac] = [
-               'root_password' => $esxiPassword
-           ];
-       } else {
-           // Remove custom credentials if empty
-           if (isset($credentials['esxi']['hosts'][$mac])) {
-               unset($credentials['esxi']['hosts'][$mac]);
-           }
-       }
-   } else {
-       // Remove any existing custom credentials
-       if (isset($credentials['esxi']['hosts'][$mac])) {
-           unset($credentials['esxi']['hosts'][$mac]);
-       }
-   }
-   
-   // Save updated credentials
-   $credentialsPath = '/srv/autodeploy/config/credentials.json';
-   file_put_contents($credentialsPath, json_encode($credentials, JSON_PRETTY_PRINT));
-   
-   return $result;
-}
+require_once __DIR__ . '/../lib/utils.php';
 
 /**
- * Process delete host action
- * 
- * @param array $postData Form data from POST
- * @return array Result with message/error information
+ * Persist (or clear) the per-host credential overrides submitted with a form.
+ *
+ * Both processAddHostAction() and processApproveHostAction() carried an
+ * identical ~60 line copy of this logic.
+ *
+ * @param string $mac      Normalised MAC address
+ * @param array  $postData Form data
+ * @return bool True when the credentials file was written successfully
  */
-function processDeleteHostAction($postData) {
-    $result = [
-        'message' => '',
-        'error' => ''
-    ];
-    
-    $hostsConfigPath = '/srv/autodeploy/config/hosts.json';
-    $hostsConfig = loadJsonConfig($hostsConfigPath);
-    
-    if (!$hostsConfig) {
-        $result['error'] = "Cannot delete host - hosts configuration file not found";
-        return $result;
+function saveHostCredentialOverrides($mac, array $postData) {
+    $credentials = loadSecureCredentials();
+    if (!is_array($credentials)) {
+        $credentials = [];
     }
-    
-    $mac = $postData['mac'];
-    $found = false;
-    
-    foreach ($hostsConfig['hosts'] as $index => $host) {
-        if (formatMac($host['mac_address']) === formatMac($mac)) {
-            array_splice($hostsConfig['hosts'], $index, 1);
-            $found = true;
-            break;
+
+    foreach (['ilo', 'esxi'] as $type) {
+        if (!isset($credentials[$type]) || !is_array($credentials[$type])) {
+            $credentials[$type] = [];
+        }
+        if (!isset($credentials[$type]['hosts']) || !is_array($credentials[$type]['hosts'])) {
+            $credentials[$type]['hosts'] = [];
         }
     }
-    
-    if ($found) {
-        if (saveJsonConfig($hostsConfigPath, $hostsConfig)) {
-            $result['message'] = "Host with MAC '$mac' deleted successfully";
-        } else {
-            $result['error'] = "Failed to save hosts configuration after deletion";
+
+    // iLO override
+    $iloUsername = trim((string)($postData['ilo_username'] ?? ''));
+    $iloPassword = (string)($postData['ilo_password'] ?? '');
+
+    if (isset($postData['use_custom_ilo']) && ($iloUsername !== '' || $iloPassword !== '')) {
+        $entry = $credentials['ilo']['hosts'][$mac] ?? [];
+        if ($iloUsername !== '') {
+            $entry['username'] = $iloUsername;
+        }
+        // An empty password field means "keep the stored one", not "erase it";
+        // browsers never repopulate password inputs.
+        if ($iloPassword !== '') {
+            $entry['password'] = $iloPassword;
+        }
+        $credentials['ilo']['hosts'][$mac] = $entry;
+    } elseif (!isset($postData['use_custom_ilo'])) {
+        unset($credentials['ilo']['hosts'][$mac]);
+    }
+
+    // ESXi override
+    $esxiPassword = (string)($postData['esxi_password'] ?? '');
+
+    if (isset($postData['use_custom_esxi'])) {
+        if ($esxiPassword !== '') {
+            $credentials['esxi']['hosts'][$mac] = ['root_password' => $esxiPassword];
         }
     } else {
-        $result['error'] = "Host with MAC '$mac' not found";
+        unset($credentials['esxi']['hosts'][$mac]);
     }
-    
-    return $result;
+
+    return saveSecureCredentials($credentials);
 }
 
 /**
- * Process secure boot toggle action
- * 
- * @param array $postData Form data from POST
- * @return array Result with message/error/scanOutput information
+ * Validate the network fields shared by the add and approve forms.
+ *
+ * @param array $postData Form data
+ * @param bool  $requireGateway Whether a gateway is mandatory
+ * @return string Empty string when valid, otherwise an error message
  */
-function processSecureBootAction($postData) {
-    $result = [
-        'message' => '',
-        'error' => '',
-        'scanOutput' => ''
-    ];
-    
-    $hostsConfigPath = '/srv/autodeploy/config/hosts.json';
-    $hostsConfig = loadJsonConfig($hostsConfigPath);
-    
-    if (!$hostsConfig) {
-        $result['error'] = "Cannot manage secure boot - hosts configuration file not found";
+function validateHostNetworkInput(array $postData, $requireGateway = true) {
+    $managementIp = trim((string)($postData['management_ip'] ?? ''));
+    $netmask = trim((string)($postData['management_netmask'] ?? '255.255.255.0'));
+    $gateway = trim((string)($postData['management_gateway'] ?? ''));
+
+    if (!isValidIpv4($managementIp)) {
+        return 'Invalid ESX management IP address';
+    }
+
+    if (!isValidNetmask($netmask)) {
+        return 'Invalid ESX management netmask';
+    }
+
+    if ($gateway !== '' && !isValidIpv4($gateway)) {
+        return 'Invalid ESX management gateway';
+    }
+
+    if ($requireGateway && $gateway === '') {
+        return 'ESX management gateway is required';
+    }
+
+    if (!isValidVlanId($postData['vlan_mgmt'] ?? 0)) {
+        return 'Management VLAN must be between 0 and 4094';
+    }
+
+    $vmotionIp = trim((string)($postData['vmotion_ip'] ?? ''));
+    if ($vmotionIp !== '') {
+        if (!isValidIpv4($vmotionIp)) {
+            return 'Invalid vMotion IP address';
+        }
+        $vmotionNetmask = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
+        if (!isValidNetmask($vmotionNetmask)) {
+            return 'Invalid vMotion netmask';
+        }
+        if (!isValidVlanId($postData['vlan_vmotion'] ?? 0)) {
+            return 'vMotion VLAN must be between 0 and 4094';
+        }
+    }
+
+    $iloIp = trim((string)($postData['ilo_ip'] ?? ''));
+    if ($iloIp !== '' && !isValidIpv4($iloIp)) {
+        return 'Invalid iLO IP address';
+    }
+
+    return '';
+}
+
+/**
+ * Add or update a host from the host editor form.
+ *
+ * @param array $postData Form data from POST
+ * @return array{message: string, error: string}
+ */
+function processAddHostAction($postData) {
+    $result = ['message' => '', 'error' => ''];
+
+    $mac = formatMac($postData['mac'] ?? '');
+    if ($mac === '') {
+        $result['error'] = 'A valid MAC address is required';
         return $result;
     }
-    
-    $mac = $postData['mac'];
-    $enable = ($postData['secure_boot'] === 'enable');
-    
-    $toggleResult = toggleSecureBoot($mac, $enable);
-    
-    if ($toggleResult['success']) {
-        // Update host status in configuration
-        foreach ($hostsConfig['hosts'] as &$host) {
-            if (formatMac($host['mac_address']) === formatMac($mac)) {
-                $host['secure_boot_status'] = $enable ? 'enabled' : 'disabled';
+
+    $fqdn = trim((string)($postData['fqdn'] ?? ''));
+    if ($fqdn === '' || !isValidHostname($fqdn)) {
+        $result['error'] = 'A valid FQDN is required';
+        return $result;
+    }
+
+    $hostname = trim((string)($postData['hostname'] ?? ''));
+    if ($hostname === '') {
+        $hostname = extractHostnameFromFQDN($fqdn);
+    }
+    if (!isValidHostname($hostname)) {
+        $result['error'] = 'Invalid hostname';
+        return $result;
+    }
+
+    $validationError = validateHostNetworkInput($postData);
+    if ($validationError !== '') {
+        $result['error'] = $validationError;
+        return $result;
+    }
+
+    $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+    $deploymentType = ($postData['deployment_type'] ?? 'standard') === 'vcf' ? 'vcf' : 'standard';
+
+    $esxiVersion = (string)($postData['esxi_version'] ?? '');
+    $knownVersions = array_keys($globalConfig['deployment']['esxi_versions'] ?? []);
+    if ($esxiVersion === '' || !in_array($esxiVersion, $knownVersions, true)) {
+        $esxiVersion = $globalConfig['deployment']['default_version'] ?? '';
+    }
+
+    $vmotionIp = trim((string)($postData['vmotion_ip'] ?? ''));
+    $isStandard = ($deploymentType === 'standard');
+
+    $updatedExisting = false;
+
+    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use (
+        $mac, $hostname, $fqdn, $esxiVersion, $deploymentType, $postData, $vmotionIp, $isStandard, &$updatedExisting
+    ) {
+        if (!isset($config['hosts']) || !is_array($config['hosts'])) {
+            $config['hosts'] = [];
+        }
+
+        $existing = [];
+        $existingIndex = -1;
+        foreach ($config['hosts'] as $index => $host) {
+            if (hostMatchesMac($host, $mac)) {
+                $existing = $host;
+                $existingIndex = $index;
                 break;
             }
         }
-        
-        saveJsonConfig($hostsConfigPath, $hostsConfig);
-        
-        $result['message'] = "Secure boot " . ($enable ? "enabled" : "disabled") . " for host with MAC '$mac'";
-    } else {
-        $result['error'] = "Failed to " . ($enable ? "enable" : "disable") . " secure boot";
-        $result['scanOutput'] = $toggleResult['output'];
+
+        // Merge into the existing record so that fields the form does not
+        // expose (serial numbers and additional MACs from the iLO scan,
+        // deployment history, datastore layout) are no longer wiped out.
+        $entry = array_merge($existing, [
+            'mac_address'         => $mac,
+            'hostname'            => $hostname,
+            'fqdn'                => $fqdn,
+            'esxi_version'        => $esxiVersion,
+            'management_ip'       => trim((string)$postData['management_ip']),
+            'management_netmask'  => trim((string)($postData['management_netmask'] ?? '255.255.255.0')),
+            'management_gateway'  => trim((string)($postData['management_gateway'] ?? '')),
+            'deployment_type'     => $deploymentType,
+            'deployment_status'   => 'approved',
+            'last_updated'        => date('Y-m-d H:i:s'),
+        ]);
+
+        $serial = trim((string)($postData['serial'] ?? ''));
+        if ($serial !== '') {
+            $entry['serial_number'] = $serial;
+        }
+
+        $iloIp = trim((string)($postData['ilo_ip'] ?? ''));
+        if ($iloIp !== '') {
+            $entry['ilo_ip'] = $iloIp;
+        }
+
+        $entry['vlans'] = [
+            'management' => (int)($postData['vlan_mgmt'] ?? 0),
+            'vmotion'    => $isStandard ? (int)($postData['vlan_vmotion'] ?? 0) : 0,
+            'storage'    => (int)($existing['vlans']['storage'] ?? 0),
+        ];
+
+        if ($isStandard && $vmotionIp !== '') {
+            $entry['vmotion_ip'] = $vmotionIp;
+            $entry['vmotion_netmask'] = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
+        } else {
+            unset($entry['vmotion_ip'], $entry['vmotion_netmask']);
+        }
+
+        if (!isset($entry['datastore'])) {
+            $entry['datastore'] = ['name' => 'datastore1', 'drives' => []];
+        }
+        if (!isset($entry['secure_boot_status'])) {
+            $entry['secure_boot_status'] = 'unknown';
+        }
+
+        if ($existingIndex >= 0) {
+            $config['hosts'][$existingIndex] = $entry;
+            $updatedExisting = true;
+        } else {
+            $config['hosts'][] = $entry;
+        }
+
+        return true;
+    });
+
+    if (!$ok) {
+        $result['error'] = 'Failed to save hosts configuration';
+        return $result;
     }
-    
+
+    if (!saveHostCredentialOverrides($mac, $postData)) {
+        $result['error'] = 'Host saved, but the credential overrides could not be written';
+    }
+
+    logMessage(($updatedExisting ? 'Updated' : 'Added') . " host $hostname ($mac)");
+    $result['message'] = "Host '$hostname' " . ($updatedExisting ? 'updated' : 'added') . ' successfully';
+
     return $result;
 }
 
 /**
-* Process approve host action with vMotion and custom credentials support
-* 
-* @param array $postData Form data from POST
-* @return array Result with message/error information
-*/
-function processApproveHostAction($postData) {
-   $result = [
-       'message' => '',
-       'error' => ''
-   ];
-   
-   $hostsConfigPath = '/srv/autodeploy/config/hosts.json';
-   $hostsConfig = loadJsonConfig($hostsConfigPath);
-   
-   if (!$hostsConfig) {
-       $result['error'] = "Cannot approve host - hosts configuration file not found";
-       return $result;
-   }
-   
-   $mac = $postData['mac'];
-   $hostname = $postData['hostname'] ?? '';
-   $managementIp = $postData['management_ip'] ?? '';
-   
-   if (empty($hostname) || empty($managementIp)) {
-       $result['error'] = "Hostname and ESX management IP are required to approve a host";
-       return $result;
-   }
-   
-   $deploymentType = $postData['deployment_type'] ?? 'standard';
-   
-   $updated = false;
-   foreach ($hostsConfig['hosts'] as &$host) {
-       if (formatMac($host['mac_address']) === formatMac($mac)) {
-           $host['hostname'] = $hostname;
-           $host['management_ip'] = $managementIp;
-           $host['management_netmask'] = $postData['management_netmask'] ?? '255.255.255.0';
-           $host['management_gateway'] = $postData['management_gateway'] ?? '';
-           $host['fqdn'] = $postData['fqdn'] ?? "$hostname.local";
-           $host['deployment_type'] = $deploymentType;
-           
-           // Set VLANs
-           if (!isset($host['vlans'])) {
-               $host['vlans'] = ['management' => 0, 'vmotion' => 0, 'storage' => 0];
-           }
-           $host['vlans']['management'] = (int)($postData['vlan_mgmt'] ?? 0);
-           
-           // Add vMotion fields if provided and deployment type is standard
-           if ($deploymentType === 'standard') {
-               if (isset($postData['vmotion_ip']) && !empty($postData['vmotion_ip'])) {
-                   $host['vmotion_ip'] = $postData['vmotion_ip'];
-                   $host['vmotion_netmask'] = $postData['vmotion_netmask'] ?? '255.255.255.0';
-                   $host['vlans']['vmotion'] = (int)($postData['vlan_vmotion'] ?? 0);
-               }
-           } else {
-               // For VCF deployments, clear vMotion config
-               unset($host['vmotion_ip']);
-               unset($host['vmotion_netmask']);
-               $host['vlans']['vmotion'] = 0;
-           }
-           
-           $host['deployment_status'] = 'approved';
-           $host['approved_time'] = date('Y-m-d H:i:s');
-           $updated = true;
-           break;
-       }
-   }
-   
-   if ($updated) {
-       if (!saveJsonConfig($hostsConfigPath, $hostsConfig)) {
-           $result['error'] = "Failed to update host approval status";
-           return $result;
-       }
-   } else {
-       $result['error'] = "Host with MAC '$mac' not found";
-       return $result;
-   }
+ * Delete a host.
+ *
+ * @param array $postData Form data from POST
+ * @return array{message: string, error: string}
+ */
+function processDeleteHostAction($postData) {
+    $result = ['message' => '', 'error' => ''];
 
-   // Handle custom credentials if enabled
-   $mac = formatMac($mac);
-   
-   // Load existing credentials
-   $credentials = loadSecureCredentials();
-   if (!$credentials) {
-       $credentials = [
-           'ilo' => ['hosts' => []],
-           'esxi' => ['hosts' => []]
-       ];
-   }
-   
-   // Ensure structure exists
-   if (!isset($credentials['ilo']['hosts'])) {
-       $credentials['ilo']['hosts'] = [];
-   }
-   
-   if (!isset($credentials['esxi']['hosts'])) {
-       $credentials['esxi']['hosts'] = [];
-   }
-   
-   // Process iLO credentials
-   if (isset($postData['use_custom_ilo'])) {
-       $iloUsername = $postData['ilo_username'] ?? '';
-       $iloPassword = $postData['ilo_password'] ?? '';
-       
-       if (!empty($iloUsername) || !empty($iloPassword)) {
-           $credentials['ilo']['hosts'][$mac] = [
-               'username' => $iloUsername,
-               'password' => $iloPassword
-           ];
-       } else {
-           // Remove custom credentials if empty
-           if (isset($credentials['ilo']['hosts'][$mac])) {
-               unset($credentials['ilo']['hosts'][$mac]);
-           }
-       }
-   } else {
-       // Remove any existing custom credentials
-       if (isset($credentials['ilo']['hosts'][$mac])) {
-           unset($credentials['ilo']['hosts'][$mac]);
-       }
-   }
-   
-   // Process ESXi credentials
-   if (isset($postData['use_custom_esxi'])) {
-       $esxiPassword = $postData['esxi_password'] ?? '';
-       
-       if (!empty($esxiPassword)) {
-           $credentials['esxi']['hosts'][$mac] = [
-               'root_password' => $esxiPassword
-           ];
-       } else {
-           // Remove custom credentials if empty
-           if (isset($credentials['esxi']['hosts'][$mac])) {
-               unset($credentials['esxi']['hosts'][$mac]);
-           }
-       }
-   } else {
-       // Remove any existing custom credentials
-       if (isset($credentials['esxi']['hosts'][$mac])) {
-           unset($credentials['esxi']['hosts'][$mac]);
-       }
-   }
-   
-   // Save updated credentials
-   $credentialsPath = '/srv/autodeploy/config/credentials.json';
-   file_put_contents($credentialsPath, json_encode($credentials, JSON_PRETTY_PRINT));
-   
-   $result['message'] = "Host with MAC '$mac' approved for deployment";
-   return $result;
+    $mac = formatMac($postData['mac'] ?? '');
+    if ($mac === '') {
+        $result['error'] = 'A valid MAC address is required';
+        return $result;
+    }
+
+    $found = false;
+    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use ($mac, &$found) {
+        foreach ($config['hosts'] as $index => $host) {
+            if (hostMatchesMac($host, $mac)) {
+                array_splice($config['hosts'], $index, 1);
+                $found = true;
+                break;
+            }
+        }
+        return $found;
+    });
+
+    if (!$found) {
+        $result['error'] = "Host with MAC '$mac' not found";
+        return $result;
+    }
+
+    if (!$ok) {
+        $result['error'] = 'Failed to save hosts configuration after deletion';
+        return $result;
+    }
+
+    // Drop any credential overrides so they cannot leak to a future host
+    // that happens to reuse the MAC.
+    $credentials = loadSecureCredentials();
+    if (is_array($credentials)) {
+        unset($credentials['ilo']['hosts'][$mac], $credentials['esxi']['hosts'][$mac]);
+        saveSecureCredentials($credentials);
+    }
+
+    logMessage("Deleted host $mac");
+    $result['message'] = "Host with MAC '$mac' deleted successfully";
+
+    return $result;
+}
+
+/**
+ * Enable or disable secure boot for a host.
+ *
+ * @param array $postData Form data from POST
+ * @return array{message: string, error: string, scanOutput: string}
+ */
+function processSecureBootAction($postData) {
+    $result = ['message' => '', 'error' => '', 'scanOutput' => ''];
+
+    $mac = formatMac($postData['mac'] ?? '');
+    if ($mac === '') {
+        $result['error'] = 'A valid MAC address is required';
+        return $result;
+    }
+
+    $enable = (($postData['secure_boot'] ?? '') === 'enable');
+
+    $toggleResult = toggleSecureBoot($mac, $enable);
+
+    if (!$toggleResult['success']) {
+        $result['error'] = 'Failed to ' . ($enable ? 'enable' : 'disable') . ' secure boot';
+        $result['scanOutput'] = $toggleResult['output'];
+        return $result;
+    }
+
+    // secure_boot_manager.py already records the new status; refresh it here
+    // too so the dashboard is correct even if the script's write raced.
+    updateHostByMac($mac, ['secure_boot_status' => $enable ? 'enabled' : 'disabled']);
+
+    $result['message'] = 'Secure boot ' . ($enable ? 'enabled' : 'disabled') . " for host with MAC '$mac'";
+
+    return $result;
+}
+
+/**
+ * Approve a pending host for deployment.
+ *
+ * @param array $postData Form data from POST
+ * @return array{message: string, error: string}
+ */
+function processApproveHostAction($postData) {
+    $result = ['message' => '', 'error' => ''];
+
+    $mac = formatMac($postData['mac'] ?? '');
+    if ($mac === '') {
+        $result['error'] = 'A valid MAC address is required';
+        return $result;
+    }
+
+    $hostname = trim((string)($postData['hostname'] ?? ''));
+    if ($hostname === '' || !isValidHostname($hostname)) {
+        $result['error'] = 'A valid hostname is required to approve a host';
+        return $result;
+    }
+
+    $validationError = validateHostNetworkInput($postData);
+    if ($validationError !== '') {
+        $result['error'] = $validationError;
+        return $result;
+    }
+
+    $fqdn = trim((string)($postData['fqdn'] ?? ''));
+    if ($fqdn === '') {
+        $fqdn = $hostname . '.local';
+    }
+    if (!isValidHostname($fqdn)) {
+        $result['error'] = 'Invalid FQDN';
+        return $result;
+    }
+
+    $deploymentType = ($postData['deployment_type'] ?? 'standard') === 'vcf' ? 'vcf' : 'standard';
+    $vmotionIp = trim((string)($postData['vmotion_ip'] ?? ''));
+
+    $found = false;
+    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use (
+        $mac, $hostname, $fqdn, $deploymentType, $postData, $vmotionIp, &$found
+    ) {
+        foreach ($config['hosts'] as &$host) {
+            if (!hostMatchesMac($host, $mac)) {
+                continue;
+            }
+
+            $host['hostname'] = $hostname;
+            $host['fqdn'] = $fqdn;
+            $host['management_ip'] = trim((string)$postData['management_ip']);
+            $host['management_netmask'] = trim((string)($postData['management_netmask'] ?? '255.255.255.0'));
+            $host['management_gateway'] = trim((string)($postData['management_gateway'] ?? ''));
+            $host['deployment_type'] = $deploymentType;
+
+            if (!isset($host['vlans']) || !is_array($host['vlans'])) {
+                $host['vlans'] = ['management' => 0, 'vmotion' => 0, 'storage' => 0];
+            }
+            $host['vlans']['management'] = (int)($postData['vlan_mgmt'] ?? 0);
+
+            if ($deploymentType === 'standard' && $vmotionIp !== '') {
+                $host['vmotion_ip'] = $vmotionIp;
+                $host['vmotion_netmask'] = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
+                $host['vlans']['vmotion'] = (int)($postData['vlan_vmotion'] ?? 0);
+            } else {
+                unset($host['vmotion_ip'], $host['vmotion_netmask']);
+                $host['vlans']['vmotion'] = 0;
+            }
+
+            $host['deployment_status'] = 'approved';
+            $host['approved_time'] = date('Y-m-d H:i:s');
+            $found = true;
+            break;
+        }
+        unset($host);
+
+        return $found;
+    });
+
+    if (!$found) {
+        $result['error'] = "Host with MAC '$mac' not found";
+        return $result;
+    }
+
+    if (!$ok) {
+        $result['error'] = 'Failed to update host approval status';
+        return $result;
+    }
+
+    if (!saveHostCredentialOverrides($mac, $postData)) {
+        $result['error'] = 'Host approved, but the credential overrides could not be written';
+    }
+
+    logMessage("Approved host $hostname ($mac) for deployment");
+    $result['message'] = "Host with MAC '$mac' approved for deployment";
+
+    return $result;
+}
+
+/**
+ * Mark a deployed host for reinstallation.
+ *
+ * This handler was wired up in the hosts tab but never implemented, so the
+ * "Reinstall" button produced a fatal "undefined function" error.
+ *
+ * @param array $postData Form data from POST
+ * @return array{message: string, error: string}
+ */
+function processReinstallHostAction($postData) {
+    $result = ['message' => '', 'error' => ''];
+
+    $mac = formatMac($postData['mac'] ?? '');
+    if ($mac === '') {
+        $result['error'] = 'A valid MAC address is required';
+        return $result;
+    }
+
+    $found = false;
+    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use ($mac, &$found) {
+        foreach ($config['hosts'] as &$host) {
+            if (!hostMatchesMac($host, $mac)) {
+                continue;
+            }
+            $host['deployment_status'] = 'approved';
+            $host['approved_time'] = date('Y-m-d H:i:s');
+            $host['reinstall_requested'] = date('Y-m-d H:i:s');
+            unset($host['deployment_started'], $host['deployment_time']);
+            $found = true;
+            break;
+        }
+        unset($host);
+
+        return $found;
+    });
+
+    if (!$found) {
+        $result['error'] = "Host with MAC '$mac' not found";
+        return $result;
+    }
+
+    if (!$ok) {
+        $result['error'] = 'Failed to mark host for reinstallation';
+        return $result;
+    }
+
+    logMessage("Host $mac marked for reinstallation");
+    $result['message'] = "Host '$mac' is queued for reinstallation. Reboot it to start the network install.";
+
+    return $result;
 }

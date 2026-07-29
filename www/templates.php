@@ -12,6 +12,107 @@ if (!defined('ADMIN_DASHBOARD')) {
     exit('Direct access not allowed.');
 }
 
+require_once __DIR__ . '/../lib/utils.php';
+
+/**
+ * Resolve the configured templates directory.
+ *
+ * @param array|null $globalConfig Global configuration
+ * @return string Absolute path to the templates directory
+ */
+function getTemplatesDir($globalConfig = null) {
+    if ($globalConfig === null) {
+        $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+    }
+
+    $dir = $globalConfig['paths']['templates_dir'] ?? (AUTODEPLOY_ROOT . '/templates');
+
+    return rtrim($dir, '/');
+}
+
+/**
+ * Validate a user-supplied template file name.
+ *
+ * Template names come straight from POST/GET data. Without this check a
+ * logged-in user could read, overwrite or delete any file the web server can
+ * reach (for example ../config/credentials.json, or a new .php file inside
+ * the document root), which is a remote code execution path.
+ *
+ * @param string $filename Untrusted file name
+ * @return bool True when the name is a plain *.cfg file name
+ */
+function isValidTemplateName($filename) {
+    $filename = (string)$filename;
+
+    return $filename !== ''
+        && $filename === basename($filename)
+        && (bool)preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.cfg$/', $filename);
+}
+
+/**
+ * Validate a user-supplied backup file name (template.cfg.YYYYmmdd_HHMMSS).
+ *
+ * @param string $filename Untrusted file name
+ * @return bool True when the name is a valid backup file name
+ */
+function isValidBackupName($filename) {
+    $filename = (string)$filename;
+
+    if ($filename === '' || $filename !== basename($filename)) {
+        return false;
+    }
+
+    if (!preg_match('/^(.+\.cfg)\.\d{8}_\d{6}$/', $filename, $matches)) {
+        return false;
+    }
+
+    return isValidTemplateName($matches[1]);
+}
+
+/**
+ * Resolve a template file name to an absolute path inside the templates dir.
+ *
+ * @param string      $filename     Untrusted template file name
+ * @param string|null $templatesDir Templates directory (defaults to config)
+ * @return string|null Absolute path, or null when the name is not acceptable
+ */
+function resolveTemplatePath($filename, $templatesDir = null) {
+    if (!isValidTemplateName($filename)) {
+        return null;
+    }
+
+    return ($templatesDir ?? getTemplatesDir()) . '/' . $filename;
+}
+
+/**
+ * Resolve a backup file name to an absolute path inside the backups dir.
+ *
+ * @param string      $filename     Untrusted backup file name
+ * @param string|null $templatesDir Templates directory (defaults to config)
+ * @return string|null Absolute path, or null when the name is not acceptable
+ */
+function resolveBackupPath($filename, $templatesDir = null) {
+    if (!isValidBackupName($filename)) {
+        return null;
+    }
+
+    return ($templatesDir ?? getTemplatesDir()) . '/backups/' . $filename;
+}
+
+/**
+ * Derive the original template name from a backup file name.
+ *
+ * @param string $backupFile Backup file name
+ * @return string|null Original template file name, or null
+ */
+function templateNameFromBackup($backupFile) {
+    if (!isValidBackupName($backupFile)) {
+        return null;
+    }
+
+    return preg_replace('/\.\d{8}_\d{6}$/', '', $backupFile);
+}
+
 /**
  * List all available template files in the templates directory
  * 
@@ -265,13 +366,17 @@ function createTemplate($templatesDir, $filename, $content, $type) {
         }
     }
     
-    $filePath = "$templatesDir/$filename";
-    
+    $filePath = resolveTemplatePath($filename, $templatesDir);
+    if ($filePath === null) {
+        dashboard_log("Rejected invalid template name: $filename", 'WARNING');
+        return false;
+    }
+
     // Don't overwrite existing files
     if (file_exists($filePath)) {
         return false;
     }
-    
+
     return saveTemplateFile($filePath, $content, false);
 }
 
@@ -546,7 +651,7 @@ function renderVariablesHelpModal() {
                                 <tr>
                                     <td><code>{{ESXMGMT_IP}}</code></td>
                                     <td>Management IP address</td>
-                                    <td>192.168.1.21</td>
+                                    <td>198.51.100.21</td>
                                 </tr>
                                 <tr>
                                     <td><code>{{ESXMGMT_NETMASK}}</code></td>
@@ -556,7 +661,7 @@ function renderVariablesHelpModal() {
                                 <tr>
                                     <td><code>{{ESXMGMT_GATEWAY}}</code></td>
                                     <td>Management default gateway</td>
-                                    <td>192.168.1.1</td>
+                                    <td>198.51.100.1</td>
                                 </tr>
                                 <tr>
                                     <td><code>{{ESXIMGMT_VLANID}}</code></td>
@@ -566,7 +671,7 @@ function renderVariablesHelpModal() {
                                 <tr>
                                     <td><code>{{DNS_SERVERS}}</code></td>
                                     <td>Comma-separated list of DNS servers</td>
-                                    <td>8.8.8.8,8.8.4.4</td>
+                                    <td>192.0.2.53,192.0.2.54</td>
                                 </tr>
                                 <tr>
                                     <td><code>{{HOSTNAME}}</code></td>
@@ -586,7 +691,7 @@ function renderVariablesHelpModal() {
                                 <tr>
                                     <td><code>{{SERVER_IP}}</code></td>
                                     <td>Deployment server IP address</td>
-                                    <td>10.1.40.151</td>
+                                    <td>192.0.2.10</td>
                                 </tr>
                                 <tr>
                                     <td><code>{{MAC_ADDRESS}}</code></td>
@@ -599,7 +704,7 @@ function renderVariablesHelpModal() {
                                 <tr>
                                     <td><code>{{VMOTION_IP}}</code></td>
                                     <td>vMotion interface IP address</td>
-                                    <td>192.168.10.215</td>
+                                    <td>198.51.100.21</td>
                                 </tr>
                                 <tr>
                                     <td><code>{{VMOTION_NETMASK}}</code></td>
@@ -655,36 +760,36 @@ function renderTemplatesContent($globalConfig) {
     $editContent = '';
     $backups = [];
     
-    if (isset($_GET['edit']) && !empty($_GET['edit'])) {
-        $editFile = $_GET['edit'];
-        $editPath = "$templatesDir/$editFile";
-        
-        if (file_exists($editPath)) {
+    if (!empty($_GET['edit'])) {
+        $editFile = (string)$_GET['edit'];
+        $editPath = resolveTemplatePath($editFile, $templatesDir);
+
+        if ($editPath !== null && is_file($editPath)) {
             $editTemplate = [
                 'filename' => $editFile,
                 'path' => $editPath
             ];
-            
-            $editContent = file_get_contents($editPath);
+
+            $editContent = (string)file_get_contents($editPath);
             $backups = getTemplateBackups($editPath);
         }
     }
-    
+
     // Get backup to view (if specified)
     $viewBackup = null;
     $backupContent = '';
-    
-    if (isset($_GET['view_backup']) && !empty($_GET['view_backup'])) {
-        $backupFile = $_GET['view_backup'];
-        $backupPath = "$templatesDir/backups/$backupFile";
-        
-        if (file_exists($backupPath)) {
+
+    if (!empty($_GET['view_backup'])) {
+        $backupFile = (string)$_GET['view_backup'];
+        $backupPath = resolveBackupPath($backupFile, $templatesDir);
+
+        if ($backupPath !== null && is_file($backupPath)) {
             $viewBackup = [
                 'filename' => $backupFile,
                 'path' => $backupPath
             ];
-            
-            $backupContent = file_get_contents($backupPath);
+
+            $backupContent = (string)file_get_contents($backupPath);
         }
     }
     ?>
@@ -711,15 +816,15 @@ function renderTemplatesContent($globalConfig) {
             <div class="card shadow mb-4">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="m-0 font-weight-bold text-primary">
-                        Viewing Backup: <?php echo htmlspecialchars($viewBackup['filename']); ?>
+                        Viewing Backup: <?php echo h($viewBackup['filename']); ?>
                     </h5>
                     <div>
                         <a href="?tab=templates" class="btn btn-sm btn-secondary">
                             <i class="fas fa-arrow-left"></i> Back to Templates
                         </a>
-                        <form method="post" class="d-inline">
+                        <form method="post" class="d-inline"><?php echo csrfField(); ?>
                             <input type="hidden" name="action" value="restore_backup">
-                            <input type="hidden" name="backup_file" value="<?php echo htmlspecialchars($viewBackup['filename']); ?>">
+                            <input type="hidden" name="backup_file" value="<?php echo h($viewBackup['filename']); ?>">
                             <button type="submit" class="btn btn-sm btn-warning" 
                                     onclick="return confirm('Are you sure you want to restore this backup? The current template will be overwritten.')">
                                 <i class="fas fa-history"></i> Restore This Version
@@ -733,7 +838,7 @@ function renderTemplatesContent($globalConfig) {
                             <i class="fas fa-info-circle"></i> 
                             This is a read-only view of a backup version. To make changes, you can restore this version first.
                         </div>
-                        <pre class="template-content"><?php echo htmlspecialchars($backupContent); ?></pre>
+                        <pre class="template-content"><?php echo h($backupContent); ?></pre>
                     </div>
                 </div>
             </div>
@@ -744,7 +849,7 @@ function renderTemplatesContent($globalConfig) {
     <div class="card shadow mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="m-0 font-weight-bold text-primary">
-                Editing Template: <?php echo htmlspecialchars($editTemplate['filename']); ?>
+                Editing Template: <?php echo h($editTemplate['filename']); ?>
             </h5>
             <div>
                 <a href="?tab=templates" class="btn btn-sm btn-secondary">
@@ -755,9 +860,9 @@ function renderTemplatesContent($globalConfig) {
         <div class="card-body">
             <?php addTemplateEditorStyles(); ?>
             
-            <form method="post">
+            <form method="post"><?php echo csrfField(); ?>
                 <input type="hidden" name="action" value="save_template">
-                <input type="hidden" name="template_file" value="<?php echo htmlspecialchars($editTemplate['filename']); ?>">
+                <input type="hidden" name="template_file" value="<?php echo h($editTemplate['filename']); ?>">
                 
                 <div class="mb-3">
                     <div class="d-flex justify-content-between align-items-center mb-2">
@@ -767,7 +872,7 @@ function renderTemplatesContent($globalConfig) {
                         </button>
                     </div>
                     <textarea class="form-control code-editor" id="template-content" name="template_content" 
-                              rows="20"><?php echo htmlspecialchars($editContent); ?></textarea>
+                              rows="20"><?php echo h($editContent); ?></textarea>
                     
                     <!-- Variable Insertion Buttons -->
                     <div class="variable-section">
@@ -837,7 +942,7 @@ function renderTemplatesContent($globalConfig) {
                             <tr>
                                 <td><code>{{ESXMGMT_IP}}</code></td>
                                 <td>Management IP address</td>
-                                <td>192.168.1.21</td>
+                                <td>198.51.100.21</td>
                             </tr>
                             <tr>
                                 <td><code>{{ESXMGMT_NETMASK}}</code></td>
@@ -847,7 +952,7 @@ function renderTemplatesContent($globalConfig) {
                             <tr>
                                 <td><code>{{ESXMGMT_GATEWAY}}</code></td>
                                 <td>Management default gateway</td>
-                                <td>192.168.1.1</td>
+                                <td>198.51.100.1</td>
                             </tr>
                             <tr>
                                 <td><code>{{ESXIMGMT_VLANID}}</code></td>
@@ -857,7 +962,7 @@ function renderTemplatesContent($globalConfig) {
                             <tr>
                                 <td><code>{{DNS_SERVERS}}</code></td>
                                 <td>Comma-separated list of DNS servers</td>
-                                <td>8.8.8.8,8.8.4.4</td>
+                                <td>192.0.2.53,192.0.2.54</td>
                             </tr>
                             <tr>
                                 <td><code>{{HOSTNAME}}</code></td>
@@ -877,7 +982,7 @@ function renderTemplatesContent($globalConfig) {
                             <tr>
                                 <td><code>{{SERVER_IP}}</code></td>
                                 <td>Deployment server IP address</td>
-                                <td>10.1.40.151</td>
+                                <td>192.0.2.10</td>
                             </tr>
                             <tr>
                                 <td><code>{{MAC_ADDRESS}}</code></td>
@@ -887,7 +992,7 @@ function renderTemplatesContent($globalConfig) {
                             <tr>
                                 <td><code>{{VMOTION_IP}}</code></td>
                                 <td>vMotion interface IP address</td>
-                                <td>192.168.10.215</td>
+                                <td>198.51.100.21</td>
                             </tr>
                             <tr>
                                 <td><code>{{VMOTION_NETMASK}}</code></td>
@@ -1039,24 +1144,24 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                         <tbody>
                             <?php foreach ($backups as $backup): ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($backup['date_formatted']); ?></td>
-                                <td><?php echo htmlspecialchars($backup['size_formatted']); ?></td>
+                                <td><?php echo h($backup['date_formatted']); ?></td>
+                                <td><?php echo h($backup['size_formatted']); ?></td>
                                 <td>
                                     <a href="?tab=templates&view_backup=<?php echo urlencode($backup['filename']); ?>" 
                                        class="btn btn-sm btn-info">
                                         <i class="fas fa-eye"></i> View
                                     </a>
-                                    <form method="post" class="d-inline">
+                                    <form method="post" class="d-inline"><?php echo csrfField(); ?>
                                         <input type="hidden" name="action" value="restore_backup">
-                                        <input type="hidden" name="backup_file" value="<?php echo htmlspecialchars($backup['filename']); ?>">
+                                        <input type="hidden" name="backup_file" value="<?php echo h($backup['filename']); ?>">
                                         <button type="submit" class="btn btn-sm btn-warning" 
                                                 onclick="return confirm('Are you sure you want to restore this backup? Your current changes will be lost.')">
                                             <i class="fas fa-history"></i> Restore
                                         </button>
                                     </form>
-                                    <form method="post" class="d-inline">
+                                    <form method="post" class="d-inline"><?php echo csrfField(); ?>
                                         <input type="hidden" name="action" value="delete_backup">
-                                        <input type="hidden" name="backup_file" value="<?php echo htmlspecialchars($backup['filename']); ?>">
+                                        <input type="hidden" name="backup_file" value="<?php echo h($backup['filename']); ?>">
                                         <button type="submit" class="btn btn-sm btn-danger" 
                                                 onclick="return confirm('Are you sure you want to delete this backup? This cannot be undone.')">
                                             <i class="fas fa-trash-alt"></i>
@@ -1083,7 +1188,7 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                 <div class="card-body">
                     <?php if (empty($templates)): ?>
                     <div class="alert alert-info">
-                        <i class="fas fa-info-circle me-2"></i> No template files found in directory: <?php echo htmlspecialchars($templatesDir); ?>
+                        <i class="fas fa-info-circle me-2"></i> No template files found in directory: <?php echo h($templatesDir); ?>
                     </div>
                     <?php else: ?>
                     <div class="table-responsive">
@@ -1101,10 +1206,10 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                             <tbody>
                                 <?php foreach ($templates as $template): ?>
                                 <tr>
-                                    <td><?php echo htmlspecialchars($template['filename']); ?></td>
-                                    <td><?php echo htmlspecialchars($template['type']); ?></td>
-                                    <td><?php echo htmlspecialchars($template['modified_formatted']); ?></td>
-                                    <td><?php echo htmlspecialchars($template['size_formatted']); ?></td>
+                                    <td><?php echo h($template['filename']); ?></td>
+                                    <td><?php echo h($template['type']); ?></td>
+                                    <td><?php echo h($template['modified_formatted']); ?></td>
+                                    <td><?php echo h($template['size_formatted']); ?></td>
                                     <td>
                                         <?php if ($template['backup_count'] > 0): ?>
                                             <span class="badge bg-info"><?php echo $template['backup_count']; ?> versions</span>
@@ -1118,23 +1223,23 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                                                class="btn btn-primary">
                                                 <i class="fas fa-edit"></i> Edit
                                             </a>
-                                            <form method="post" class="d-inline">
+                                            <form method="post" class="d-inline"><?php echo csrfField(); ?>
                                                 <input type="hidden" name="action" value="backup_template">
-                                                <input type="hidden" name="template_file" value="<?php echo htmlspecialchars($template['filename']); ?>">
+                                                <input type="hidden" name="template_file" value="<?php echo h($template['filename']); ?>">
                                                 <button type="submit" class="btn btn-secondary">
                                                     <i class="fas fa-save"></i> Backup
                                                 </button>
                                             </form>
-                                            <form method="post" class="d-inline">
+                                            <form method="post" class="d-inline"><?php echo csrfField(); ?>
                                                 <input type="hidden" name="action" value="download_template">
-                                                <input type="hidden" name="template_file" value="<?php echo htmlspecialchars($template['filename']); ?>">
+                                                <input type="hidden" name="template_file" value="<?php echo h($template['filename']); ?>">
                                                 <button type="submit" class="btn btn-info">
                                                     <i class="fas fa-download"></i> Download
                                                 </button>
                                             </form>
-                                            <form method="post" class="d-inline">
+                                            <form method="post" class="d-inline"><?php echo csrfField(); ?>
                                                 <input type="hidden" name="action" value="delete_template">
-                                                <input type="hidden" name="template_file" value="<?php echo htmlspecialchars($template['filename']); ?>">
+                                                <input type="hidden" name="template_file" value="<?php echo h($template['filename']); ?>">
                                                 <button type="submit" class="btn btn-danger" 
                                                         onclick="return confirm('Are you sure you want to delete this template? This cannot be undone.')">
                                                     <i class="fas fa-trash-alt"></i>
@@ -1158,7 +1263,7 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                 <div class="card-body">
                     <p>These are the templates currently assigned in your deployment configuration:</p>
                     
-                    <form method="post">
+                    <form method="post"><?php echo csrfField(); ?>
                         <input type="hidden" name="action" value="update_template_assignments">
                         
                         <div class="table-responsive">
@@ -1175,9 +1280,9 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                                         <td>
                                             <select class="form-select" name="template_standard">
                                                 <?php foreach ($templates as $template): ?>
-                                                <option value="<?php echo htmlspecialchars($template['path']); ?>" 
+                                                <option value="<?php echo h($template['path']); ?>" 
                                                         <?php echo ($template['path'] === ($globalConfig['deployment']['kickstart_templates']['standard'] ?? '')) ? 'selected' : ''; ?>>
-                                                    <?php echo htmlspecialchars($template['filename']); ?>
+                                                    <?php echo h($template['filename']); ?>
                                                 </option>
                                                 <?php endforeach; ?>
                                             </select>
@@ -1188,9 +1293,9 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                                         <td>
                                             <select class="form-select" name="template_vcf">
                                                 <?php foreach ($templates as $template): ?>
-                                                <option value="<?php echo htmlspecialchars($template['path']); ?>" 
+                                                <option value="<?php echo h($template['path']); ?>" 
                                                         <?php echo ($template['path'] === ($globalConfig['deployment']['kickstart_templates']['vcf'] ?? '')) ? 'selected' : ''; ?>>
-                                                    <?php echo htmlspecialchars($template['filename']); ?>
+                                                    <?php echo h($template['filename']); ?>
                                                 </option>
                                                 <?php endforeach; ?>
                                             </select>
@@ -1201,9 +1306,9 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                                         <td>
                                             <select class="form-select" name="template_waiting">
                                                 <?php foreach ($templates as $template): ?>
-                                                <option value="<?php echo htmlspecialchars($template['path']); ?>" 
+                                                <option value="<?php echo h($template['path']); ?>" 
                                                         <?php echo ($template['path'] === ($globalConfig['deployment']['waiting_template_path'] ?? '')) ? 'selected' : ''; ?>>
-                                                    <?php echo htmlspecialchars($template['filename']); ?>
+                                                    <?php echo h($template['filename']); ?>
                                                 </option>
                                                 <?php endforeach; ?>
                                             </select>
@@ -1234,7 +1339,7 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                     <h5 class="modal-title" id="newTemplateModalLabel">Create New Template</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <form method="post">
+                <form method="post"><?php echo csrfField(); ?>
                     <input type="hidden" name="action" value="create_template">
                     
                     <div class="modal-body">
@@ -1269,8 +1374,8 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                             <label for="existing-template" class="form-label">Copy from Template:</label>
                             <select class="form-select" id="existing-template" name="existing_template">
                                 <?php foreach ($templates as $template): ?>
-                                <option value="<?php echo htmlspecialchars($template['filename']); ?>">
-                                    <?php echo htmlspecialchars($template['filename']); ?>
+                                <option value="<?php echo h($template['filename']); ?>">
+                                    <?php echo h($template['filename']); ?>
                                 </option>
                                 <?php endforeach; ?>
                             </select>
@@ -1294,7 +1399,7 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
                     <h5 class="modal-title" id="uploadTemplateModalLabel">Upload Template</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <form method="post" enctype="multipart/form-data">
+                <form method="post" enctype="multipart/form-data"><?php echo csrfField(); ?>
                     <input type="hidden" name="action" value="upload_template">
                     
                     <div class="modal-body">
@@ -1354,12 +1459,9 @@ function processTemplatesActions($action, $postData, $files = []) {
     ];
     
     // Get templates directory
-    $globalConfig = loadJsonConfig('/srv/autodeploy/config/global_config.json');
-    $templatesDir = '/srv/autodeploy/templates';
-    if (isset($globalConfig['paths']['templates_dir'])) {
-        $templatesDir = $globalConfig['paths']['templates_dir'];
-    }
-    
+    $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+    $templatesDir = getTemplatesDir($globalConfig);
+
     // Create templates directory if it doesn't exist
     if (!is_dir($templatesDir)) {
         if (!mkdir($templatesDir, 0755, true)) {
@@ -1367,47 +1469,48 @@ function processTemplatesActions($action, $postData, $files = []) {
             return $result;
         }
     }
-    
+
     // Process actions
     switch ($action) {
         case 'save_template':
             // Save edited template
-            if (!isset($postData['template_file']) || empty($postData['template_file'])) {
-                $result['error'] = "Missing template filename";
+            $templateFile = (string)($postData['template_file'] ?? '');
+            $templatePath = resolveTemplatePath($templateFile, $templatesDir);
+
+            if ($templatePath === null) {
+                $result['error'] = 'Invalid template filename';
                 break;
             }
-            
-            $templateFile = $postData['template_file'];
-            $templatePath = "$templatesDir/$templateFile";
+
             $content = $postData['template_content'] ?? '';
             $createBackup = isset($postData['create_backup']);
-            
+
             if (saveTemplateFile($templatePath, $content, $createBackup)) {
                 $result['message'] = "Template '$templateFile' saved successfully";
             } else {
                 $result['error'] = "Failed to save template '$templateFile'";
             }
             break;
-            
+
         case 'create_template':
             // Create new template
-            if (!isset($postData['template_name']) || empty($postData['template_name'])) {
+            if (empty($postData['template_name'])) {
                 $result['error'] = "Missing template name";
                 break;
             }
-            
-            $templateName = $postData['template_name'];
+
+            $templateName = (string)$postData['template_name'];
             $templateType = $postData['template_type'] ?? 'custom';
-            
+
             // Check if we should copy from existing template
             $content = '';
-            if (isset($postData['use_existing_content']) && isset($postData['existing_template'])) {
-                $existingPath = "$templatesDir/" . $postData['existing_template'];
-                if (file_exists($existingPath)) {
-                    $content = file_get_contents($existingPath);
+            if (isset($postData['use_existing_content'], $postData['existing_template'])) {
+                $existingPath = resolveTemplatePath((string)$postData['existing_template'], $templatesDir);
+                if ($existingPath !== null && is_file($existingPath)) {
+                    $content = (string)file_get_contents($existingPath);
                 }
             }
-            
+
             if (createTemplate($templatesDir, $templateName, $content, $templateType)) {
                 $result['message'] = "Template '$templateName' created successfully";
             } else {
@@ -1417,90 +1520,94 @@ function processTemplatesActions($action, $postData, $files = []) {
             
         case 'backup_template':
             // Create backup of template
-            if (!isset($postData['template_file']) || empty($postData['template_file'])) {
-                $result['error'] = "Missing template filename";
+            $templateFile = (string)($postData['template_file'] ?? '');
+            $templatePath = resolveTemplatePath($templateFile, $templatesDir);
+
+            if ($templatePath === null || !is_file($templatePath)) {
+                $result['error'] = 'Invalid template filename';
                 break;
             }
-            
-            $templateFile = $postData['template_file'];
-            $templatePath = "$templatesDir/$templateFile";
-            
+
             if (backupTemplateFile($templatePath)) {
                 $result['message'] = "Backup created for template '$templateFile'";
             } else {
                 $result['error'] = "Failed to create backup for template '$templateFile'";
             }
             break;
-            
+
         case 'restore_backup':
             // Restore from backup
-            if (!isset($postData['backup_file']) || empty($postData['backup_file'])) {
-                $result['error'] = "Missing backup filename";
+            $backupFile = (string)($postData['backup_file'] ?? '');
+            $backupPath = resolveBackupPath($backupFile, $templatesDir);
+            $originalFile = templateNameFromBackup($backupFile);
+
+            if ($backupPath === null || $originalFile === null || !is_file($backupPath)) {
+                $result['error'] = 'Invalid backup filename';
                 break;
             }
-            
-            $backupFile = $postData['backup_file'];
-            $backupPath = "$templatesDir/backups/$backupFile";
-            
-            // Extract original filename from backup
-            $parts = explode('.', $backupFile);
-            array_pop($parts); // Remove the timestamp part
-            $originalFile = implode('.', $parts);
-            $originalPath = "$templatesDir/$originalFile";
-            
+
+            $originalPath = resolveTemplatePath($originalFile, $templatesDir);
+            if ($originalPath === null) {
+                $result['error'] = 'Invalid backup filename';
+                break;
+            }
+
             if (restoreTemplateFromBackup($backupPath, $originalPath)) {
-                $result['message'] = "Template restored successfully from backup";
+                $result['message'] = "Template '$originalFile' restored successfully from backup";
             } else {
                 $result['error'] = "Failed to restore template from backup";
             }
             break;
-            
+
         case 'delete_template':
             // Delete template
-            if (!isset($postData['template_file']) || empty($postData['template_file'])) {
-                $result['error'] = "Missing template filename";
+            $templateFile = (string)($postData['template_file'] ?? '');
+            $templatePath = resolveTemplatePath($templateFile, $templatesDir);
+
+            if ($templatePath === null || !is_file($templatePath)) {
+                $result['error'] = 'Invalid template filename';
                 break;
             }
-            
-            $templateFile = $postData['template_file'];
-            $templatePath = "$templatesDir/$templateFile";
-            
-            // Check if template is in use
+
+            // Check if template is in use. Compare canonical paths so that a
+            // trailing slash or symlink in the config does not defeat the check.
             $inUse = false;
-            if (isset($globalConfig['deployment']['kickstart_templates'])) {
-                foreach ($globalConfig['deployment']['kickstart_templates'] as $type => $path) {
-                    if ($path === $templatePath) {
-                        $inUse = true;
-                        break;
-                    }
+            $realTemplate = realpath($templatePath);
+            $assignments = $globalConfig['deployment']['kickstart_templates'] ?? [];
+            $assignments[] = $globalConfig['deployment']['waiting_template_path'] ?? '';
+
+            foreach ($assignments as $path) {
+                if ($path !== '' && realpath($path) === $realTemplate) {
+                    $inUse = true;
+                    break;
                 }
             }
-            
+
             if ($inUse) {
                 $result['error'] = "Cannot delete template '$templateFile' because it is currently in use. Please update template assignments first.";
                 break;
             }
-            
+
             // Create a backup before deleting
             backupTemplateFile($templatePath);
-            
+
             if (unlink($templatePath)) {
                 $result['message'] = "Template '$templateFile' deleted successfully (a backup was created first)";
             } else {
                 $result['error'] = "Failed to delete template '$templateFile'";
             }
             break;
-            
+
         case 'delete_backup':
             // Delete backup
-            if (!isset($postData['backup_file']) || empty($postData['backup_file'])) {
-                $result['error'] = "Missing backup filename";
+            $backupFile = (string)($postData['backup_file'] ?? '');
+            $backupPath = resolveBackupPath($backupFile, $templatesDir);
+
+            if ($backupPath === null || !is_file($backupPath)) {
+                $result['error'] = 'Invalid backup filename';
                 break;
             }
-            
-            $backupFile = $postData['backup_file'];
-            $backupPath = "$templatesDir/backups/$backupFile";
-            
+
             if (unlink($backupPath)) {
                 $result['message'] = "Backup '$backupFile' deleted successfully";
             } else {
@@ -1514,34 +1621,50 @@ function processTemplatesActions($action, $postData, $files = []) {
             
         case 'upload_template':
             // Upload template
-            if (!isset($files['template_file']) || $files['template_file']['error'] != UPLOAD_ERR_OK) {
-                $result['error'] = "Error uploading file: " . 
-                                   ($files['template_file']['error'] ?? 'Unknown error');
+            if (!isset($files['template_file']) || ($files['template_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                $result['error'] = 'Error uploading file (code '
+                    . (int)($files['template_file']['error'] ?? UPLOAD_ERR_NO_FILE) . ')';
                 break;
             }
-            
+
             $uploadedFile = $files['template_file'];
-            $filename = basename($uploadedFile['name']);
-            
-            // Use custom filename if provided
-            if (isset($postData['upload_filename']) && !empty($postData['upload_filename'])) {
-                $filename = $postData['upload_filename'];
-                
-                // Add .cfg extension if not present
-                if (!preg_match('/\.cfg$/', $filename)) {
-                    $filename .= '.cfg';
-                }
+
+            // Refuse anything that is not actually an uploaded temp file.
+            if (!is_uploaded_file($uploadedFile['tmp_name'])) {
+                $result['error'] = 'Invalid upload';
+                break;
             }
-            
-            $targetPath = "$templatesDir/$filename";
-            
+
+            // Kickstart files are small; reject oversized uploads outright.
+            if (($uploadedFile['size'] ?? 0) > 512 * 1024) {
+                $result['error'] = 'Template file is too large (limit 512 KB)';
+                break;
+            }
+
+            $filename = basename((string)$uploadedFile['name']);
+            if (!empty($postData['upload_filename'])) {
+                $filename = basename((string)$postData['upload_filename']);
+            }
+
+            // Add .cfg extension if not present
+            if (!preg_match('/\.cfg$/i', $filename)) {
+                $filename .= '.cfg';
+            }
+
+            $targetPath = resolveTemplatePath($filename, $templatesDir);
+            if ($targetPath === null) {
+                $result['error'] = 'Invalid template filename. Use letters, digits, dot, dash and underscore only.';
+                break;
+            }
+
             // Check if file already exists
             if (file_exists($targetPath)) {
                 // Create a backup of existing file
                 backupTemplateFile($targetPath);
             }
-            
+
             if (move_uploaded_file($uploadedFile['tmp_name'], $targetPath)) {
+                @chmod($targetPath, 0640);
                 $result['message'] = "Template '$filename' uploaded successfully";
             } else {
                 $result['error'] = "Failed to upload template";
@@ -1559,24 +1682,45 @@ function processTemplatesActions($action, $postData, $files = []) {
             if (!isset($globalConfig['deployment']['kickstart_templates'])) {
                 $globalConfig['deployment']['kickstart_templates'] = [];
             }
-            
-            // Update standard template
-            if (isset($postData['template_standard'])) {
-                $globalConfig['deployment']['kickstart_templates']['standard'] = $postData['template_standard'];
+
+            // Assignments must point at real templates inside the templates
+            // directory: generate_kickstart.php reads whatever path is stored
+            // here and serves it verbatim to the installer.
+            $assignmentFields = [
+                'template_standard' => ['deployment', 'kickstart_templates', 'standard'],
+                'template_vcf'      => ['deployment', 'kickstart_templates', 'vcf'],
+                'template_waiting'  => ['deployment', 'waiting_template_path'],
+            ];
+
+            $assignmentError = '';
+            foreach ($assignmentFields as $field => $configKeys) {
+                if (!isset($postData[$field]) || $postData[$field] === '') {
+                    continue;
+                }
+
+                // Accept either a bare file name or a full path inside the dir.
+                $candidate = basename((string)$postData[$field]);
+                $resolved = resolveTemplatePath($candidate, $templatesDir);
+
+                if ($resolved === null || !is_file($resolved)) {
+                    $assignmentError = "Invalid template selected for '$field'";
+                    break;
+                }
+
+                if (count($configKeys) === 3) {
+                    $globalConfig[$configKeys[0]][$configKeys[1]][$configKeys[2]] = $resolved;
+                } else {
+                    $globalConfig[$configKeys[0]][$configKeys[1]] = $resolved;
+                }
             }
-            
-            // Update VCF template
-            if (isset($postData['template_vcf'])) {
-                $globalConfig['deployment']['kickstart_templates']['vcf'] = $postData['template_vcf'];
+
+            if ($assignmentError !== '') {
+                $result['error'] = $assignmentError;
+                break;
             }
-            
-            // Update waiting template
-            if (isset($postData['template_waiting'])) {
-                $globalConfig['deployment']['waiting_template_path'] = $postData['template_waiting'];
-            }
-            
+
             // Save updated config
-            $configPath = '/srv/autodeploy/config/global_config.json';
+            $configPath = AUTODEPLOY_GLOBAL_CONFIG;
             if (saveJsonConfig($configPath, $globalConfig)) {
                 $result['message'] = "Template assignments updated successfully";
             } else {
@@ -1594,34 +1738,28 @@ function processTemplatesActions($action, $postData, $files = []) {
  * @param array $postData POST data with template information
  */
 function processDownloadRequest($postData) {
-    if (!isset($postData['template_file']) || empty($postData['template_file'])) {
+    $templateFile = (string)($postData['template_file'] ?? '');
+    $templatePath = resolveTemplatePath($templateFile);
+
+    if ($templatePath === null) {
         http_response_code(400);
-        echo "Missing template filename";
+        echo 'Invalid template filename';
         exit;
     }
-    
-    // Get templates directory
-    $globalConfig = loadJsonConfig('/srv/autodeploy/config/global_config.json');
-    $templatesDir = '/srv/autodeploy/templates';
-    if (isset($globalConfig['paths']['templates_dir'])) {
-        $templatesDir = $globalConfig['paths']['templates_dir'];
-    }
-    
-    $templateFile = $postData['template_file'];
-    $templatePath = "$templatesDir/$templateFile";
-    
-    if (!file_exists($templatePath)) {
+
+    if (!is_file($templatePath)) {
         http_response_code(404);
-        echo "Template file not found";
+        echo 'Template file not found';
         exit;
     }
-    
-    // Set headers for download
-    header('Content-Type: text/plain');
+
+    // The name is already restricted to [A-Za-z0-9._-]+.cfg, so it is safe to
+    // place in the header without further quoting.
+    header('Content-Type: text/plain; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $templateFile . '"');
     header('Content-Length: ' . filesize($templatePath));
-    
-    // Send file content
+    header('X-Content-Type-Options: nosniff');
+
     readfile($templatePath);
     exit;
 }

@@ -3,94 +3,60 @@
  * Login Page for ESXi Auto-deployment Admin
  */
 
-// Configure error handling
-ini_set('display_errors', 0);
-ini_set('log_errors', 1);
-ini_set('error_log', '/srv/autodeploy/logs/php_errors.log');
+require_once __DIR__ . '/../lib/auth.php';
 
-// Start session
-session_start();
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', AUTODEPLOY_LOG_DIR . '/php_errors.log');
 
-// Check if user is already logged in
-if (isset($_SESSION['authenticated']) && $_SESSION['authenticated'] === true) {
-    // Redirect to dashboard
+// Already logged in?
+if (!empty($_SESSION['authenticated']) && $_SESSION['authenticated'] === true) {
     header('Location: admin_dashboard.php');
     exit;
 }
 
-// Include utility functions directly - don't include files that check for ADMIN_DASHBOARD
-// Only include the auth.php file which doesn't have the protection
-require_once '/srv/autodeploy/lib/auth.php';
-
-// Process login form submission
 $error = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'login') {
-    $username = $_POST['username'] ?? '';
-    $password = $_POST['password'] ?? '';
-    
-    // Path to auth config outside web root
-    $authConfigPath = '/srv/autodeploy/config/auth_config.php';
-    
-    if (!file_exists($authConfigPath)) {
-        auth_log("Auth config not found at $authConfigPath", 'ERROR');
-        // Fall back to hardcoded credentials in development mode
-        $authConfig = [
-            'users' => [
-                'admin' => [
-                    'password_hash' => password_hash('password', PASSWORD_BCRYPT),
-                    'role' => 'admin'
-                ]
-            ]
-        ];
-        auth_log("Using fallback credentials with username 'admin'", 'WARNING');
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login') {
+    $username = (string)($_POST['username'] ?? '');
+    $password = (string)($_POST['password'] ?? '');
+    $clientIp = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+
+    // Simple throttle: after 5 failures from this browser session, make the
+    // attacker wait. Brute forcing the login was previously unrestricted.
+    $attempts = (int)($_SESSION['login_attempts'] ?? 0);
+    $lockedUntil = (int)($_SESSION['login_locked_until'] ?? 0);
+
+    if ($lockedUntil > time()) {
+        $wait = $lockedUntil - time();
+        $error = "Too many failed login attempts. Please wait {$wait} seconds and try again.";
+        auth_log("Login attempt while throttled for user '$username' from $clientIp", 'WARNING');
     } else {
-        // Load auth configuration
-        $authConfig = require($authConfigPath);
-        
-        if (!is_array($authConfig) || !isset($authConfig['users'])) {
-            auth_log("Invalid auth configuration structure", 'ERROR');
-            // Fall back to hardcoded credentials
-            $authConfig = [
-                'users' => [
-                    'admin' => [
-                        'password_hash' => password_hash('password', PASSWORD_BCRYPT),
-                        'role' => 'admin'
-                    ]
-                ]
-            ];
-            auth_log("Using fallback credentials with username 'admin'", 'WARNING');
-        }
-    }
-    
-    // Check if user exists
-    if (!isset($authConfig['users'][$username])) {
-        auth_log("Authentication failed: Unknown user $username", 'WARNING');
-        $error = 'Invalid username or password';
-    } else {
-        $userData = $authConfig['users'][$username];
-        
-        // Verify password
-        if (!password_verify($password, $userData['password_hash'])) {
-            auth_log("Authentication failed: Invalid password for $username", 'WARNING');
+        $userData = verifyCredentials($username, $password);
+
+        if ($userData === null) {
+            $attempts++;
+            $_SESSION['login_attempts'] = $attempts;
+
+            if ($attempts >= 5) {
+                // Exponential-ish backoff, capped at five minutes.
+                $_SESSION['login_locked_until'] = time() + min(300, 15 * ($attempts - 4));
+            }
+
+            auth_log("Authentication failed for user '$username' from $clientIp", 'WARNING');
+            // Deliberately generic: do not reveal whether the account exists.
             $error = 'Invalid username or password';
         } else {
-            // Authentication successful
-            auth_log("User $username successfully authenticated", 'INFO');
-            
-            // Set session variables
-            $_SESSION['authenticated'] = true;
-            $_SESSION['username'] = $username;
-            $_SESSION['role'] = $userData['role'];
-            $_SESSION['last_activity'] = time();
-            
-            // Redirect to dashboard
+            unset($_SESSION['login_attempts'], $_SESSION['login_locked_until']);
+
+            establishSession($userData);
+            auth_log("User $username successfully authenticated from $clientIp");
+
             header('Location: admin_dashboard.php');
             exit;
         }
     }
 }
-
 
 // Determine the base URL for assets
 $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
@@ -128,12 +94,13 @@ $scriptPath = $scriptPath === '/' ? '' : $scriptPath;
                             
                             <?php if ($error): ?>
                             <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                                <?php echo htmlspecialchars($error); ?>
+                                <?php echo h($error); ?>
                                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                             </div>
                             <?php endif; ?>
                             
                             <form method="post">
+                                <?php echo csrfField(); ?>
                                 <input type="hidden" name="action" value="login">
                                 
                                 <div class="form-floating mb-3">

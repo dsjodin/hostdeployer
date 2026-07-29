@@ -1,22 +1,49 @@
 #!ipxe
-echo iPXE boot starting for ESXi auto-deployment...
-echo Getting dynamic boot configuration...
+# Stage 2 of the boot chain.
+#
+#   DHCP  ->  ipxe.efi (or the firmware's own iPXE)  ->  THIS SCRIPT
+#         ->  boot.ipxe.php (per-host script)        ->  ESXi installer
+#
+# DHCP hands this file's URL to clients that already identify as iPXE. The
+# only job here is to collect identity and chain to the dynamic generator.
 
-echo SMBIOS Data:
-echo BIOS Vendor:        ${smbios/vendor}
-echo System Manufacturer:${smbios/manufacturer}
-echo System Product:     ${smbios/product}
-echo System Version:     ${smbios/version}
-echo System Serial:      ${smbios/serial}
-echo Baseboard Maker:    ${smbios/manufacturer}
-echo Baseboard Product:  ${smbios/product}
+set attempt:int32 0
 
-#set net0/mac ${net0/mac:hexhyp}
+:start
+echo
+echo ==========================================
+echo  ESXi auto-deployment
+echo ==========================================
+echo  MAC:      ${net0/mac}
+echo  IP:       ${net0/ip}
+echo  Serial:   ${smbios/serial}
+echo  Product:  ${smbios/product}
+echo  Server:   ${next-server}
+echo ==========================================
+echo
 
-# Chain to the dynamic script with our MAC address
-echo chain loading...
-chain http://${dhcp-server}/boot.ipxe.php?mac=${net0/mac}
+# ${next-server} is the deployment server as advertised by DHCP
+# (siaddr / dhcp-server-identifier). Do not use ${dhcp-server} here: with a
+# DHCP relay that is the relay address, not the web server.
+set boot-url http://${next-server}/boot.ipxe.php?mac=${net0/mac}&serial=${smbios/serial}
 
-# If chaining fails, try to boot from local disk
-echo Chain load failed, booting from local disk...
-exit
+echo Fetching boot configuration from ${boot-url}
+chain --autofree ${boot-url} || goto retry
+
+# chain only returns on failure, so reaching this point means success handed
+# control elsewhere or the script completed.
+exit 0
+
+:retry
+inc attempt
+echo Failed to load the boot configuration (attempt ${attempt}).
+iseq ${attempt} 5 && goto giveup ||
+echo Retrying in 15 seconds...
+sleep 15
+goto start
+
+:giveup
+echo Could not reach the deployment server at ${next-server}.
+echo Falling back to the next boot device.
+sleep 10
+exit 1

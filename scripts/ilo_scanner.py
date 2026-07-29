@@ -1,29 +1,44 @@
 #!/usr/bin/env python3
 
-import json
-import sys
-import os
+import argparse
 import ipaddress
-import threading
-import time
-import subprocess
+import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
+import urllib3
 
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+# iLO ships a self-signed certificate by default, so verification is off and
+# the resulting warning would otherwise be printed once per request.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Set up logging
+# All paths derive from AUTODEPLOY_ROOT so the tree can be relocated without
+# editing the scripts.
+AUTODEPLOY_ROOT = os.environ.get("AUTODEPLOY_ROOT", "/srv/autodeploy")
+CONFIG_DIR = os.path.join(AUTODEPLOY_ROOT, "config")
+LOG_DIR = os.path.join(AUTODEPLOY_ROOT, "logs")
+GLOBAL_CONFIG = os.path.join(CONFIG_DIR, "global_config.json")
+CREDENTIALS = os.path.join(CONFIG_DIR, "credentials.json")
+
+os.makedirs(LOG_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("/srv/autodeploy/logs/ilo_scanner.log"),
-        logging.StreamHandler()
-    ]
+        logging.FileHandler(os.path.join(LOG_DIR, "ilo_scanner.log")),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger("ilo_scanner")
+
+# Cached so a 254-address scan does not re-read and re-parse the config once
+# per host (load_hosts_config/save_hosts_config each called it separately).
+_global_config = None
 
 def format_mac(mac):
     """Format MAC address consistently"""
@@ -33,56 +48,54 @@ def format_mac(mac):
     return ':'.join(mac[i:i+2] for i in range(0, len(mac), 2))
 
 def load_global_config():
-    """Load the global configuration file"""
-    try:
-        with open("/srv/autodeploy/config/global_config.json", "r") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to load global config: {e}")
-        sys.exit(1)
+    """Load (and cache) the global configuration file."""
+    global _global_config
+
+    if _global_config is None:
+        try:
+            with open(GLOBAL_CONFIG, "r") as f:
+                _global_config = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load global config from {GLOBAL_CONFIG}: {e}")
+            sys.exit(1)
+
+    return _global_config
 
 def load_credentials():
-    """Load secure credentials from credentials.json"""
+    """Load the iLO section of credentials.json."""
     try:
-        with open("/srv/autodeploy/config/credentials.json", "r") as f:
-            credentials = json.load(f)
-            return credentials.get("ilo", {})
+        with open(CREDENTIALS, "r") as f:
+            return json.load(f).get("ilo", {})
     except Exception as e:
-        logger.error(f"Failed to load credentials: {e}")
+        logger.error(f"Failed to load credentials from {CREDENTIALS}: {e}")
         return {}
 
 def get_ilo_credentials(mac_address=None):
-    """Get iLO credentials, with host-specific credentials if available"""
-    try:
-        with open("/srv/autodeploy/config/credentials.json", "r") as f:
-            credentials = json.load(f)
-            
-            # Get global iLO credentials
-            ilo_creds = credentials.get("ilo", {})
-            username = ilo_creds.get("admin_user")
-            password = ilo_creds.get("admin_password")
-            
-            # Check for host-specific credentials if MAC is provided
-            if mac_address and "hosts" in ilo_creds:
-                mac_formatted = format_mac(mac_address)
-                if mac_formatted in ilo_creds["hosts"]:
-                    host_creds = ilo_creds["hosts"][mac_formatted]
-                    # Override with host-specific values if available
-                    if "username" in host_creds:
-                        username = host_creds["username"]
-                    if "password" in host_creds:
-                        password = host_creds["password"]
-                    logger.info(f"Using host-specific iLO credentials for {mac_address}")
-            
-            return username, password
-    except Exception as e:
-        logger.error(f"Failed to load credentials: {e}")
-        return None, None
+    """Return (username, password), preferring host-specific overrides."""
+    ilo_creds = load_credentials()
+
+    username = ilo_creds.get("admin_user")
+    password = ilo_creds.get("admin_password")
+
+    if mac_address:
+        host_creds = ilo_creds.get("hosts", {}).get(format_mac(mac_address))
+        if host_creds:
+            username = host_creds.get("username", username)
+            password = host_creds.get("password", password)
+            logger.info(f"Using host-specific iLO credentials for {mac_address}")
+
+    return username, password
+
+def hosts_config_path():
+    """Absolute path to hosts.json."""
+    return load_global_config().get("paths", {}).get(
+        "hosts_config", os.path.join(CONFIG_DIR, "hosts.json")
+    )
+
 
 def load_hosts_config():
     """Load the hosts configuration file"""
-    config = load_global_config()
-    hosts_path = config["paths"]["hosts_config"]
+    hosts_path = hosts_config_path()
     
     try:
         if os.path.exists(hosts_path):
@@ -95,19 +108,31 @@ def load_hosts_config():
         return {"hosts": []}
 
 def save_hosts_config(hosts_config):
-    """Save the hosts configuration file"""
-    config = load_global_config()
-    hosts_path = config["paths"]["hosts_config"]
-    
+    """Write hosts.json atomically.
+
+    The previous version truncated the real file and then wrote into it, so a
+    crash (or a PHP process reading concurrently) could observe a partial or
+    empty host list.
+    """
+    hosts_path = hosts_config_path()
+    tmp_path = f"{hosts_path}.tmp.{os.getpid()}"
+
     try:
-        # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(hosts_path), exist_ok=True)
-        
-        with open(hosts_path, "w") as f:
+
+        with open(tmp_path, "w") as f:
             json.dump(hosts_config, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(tmp_path, hosts_path)
         logger.info(f"Hosts configuration saved to {hosts_path}")
+        return True
     except Exception as e:
         logger.error(f"Failed to save hosts config: {e}")
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return False
 
 def check_host_reachable(ip):
     """Check if a host is reachable via ping"""
@@ -167,9 +192,9 @@ def get_mac_addresses_from_response(response_text):
             for interface in data["EthernetInterfaces"]:
                 if "MACAddress" in interface:
                     mac_addresses.append(interface["MACAddress"])
-    except:
-        pass
-    
+    except (ValueError, TypeError) as e:
+        logger.debug(f"Could not parse MAC addresses from response: {e}")
+
     return mac_addresses
 
 def detect_secure_boot_status(ip, username, password):
@@ -189,8 +214,9 @@ def detect_secure_boot_status(ip, username, password):
         if bios_response.status_code == 200:
             bios_data = bios_response.json()
             
-            # Log the entire BIOS data for debugging
-            logger.info(f"BIOS data for {ip}: {json.dumps(bios_data)}")
+            # The full attribute set is large and contains site-specific BIOS
+            # settings; log it only at DEBUG.
+            logger.debug(f"BIOS data for {ip}: {json.dumps(bios_data)}")
             
             # Look for different possible attribute names
             attributes = bios_data.get("Attributes", {})
@@ -243,7 +269,7 @@ def detect_secure_boot_status(ip, username, password):
             
             if secure_boot_response.status_code == 200:
                 secure_boot_data = secure_boot_response.json()
-                logger.info(f"SecureBoot resource data for {ip}: {json.dumps(secure_boot_data)}")
+                logger.debug(f"SecureBoot resource data for {ip}: {json.dumps(secure_boot_data)}")
                 
                 # Look for the SecureBootEnable property
                 if "SecureBootEnable" in secure_boot_data:
@@ -272,7 +298,7 @@ def detect_secure_boot_status(ip, username, password):
             
             if boot_response.status_code == 200:
                 boot_data = boot_response.json()
-                logger.info(f"Boot resource data for {ip}: {json.dumps(boot_data)}")
+                logger.debug(f"Boot resource data for {ip}: {json.dumps(boot_data)}")
                 
                 # Check for secure boot settings in Boot resource
                 if "SecureBoot" in boot_data:
@@ -448,110 +474,168 @@ def scan_ilo(ip, username, password):
     # Use direct HTTP requests instead of relying on redfish library
     return scan_ilo_with_requests(ip, username, password)
 
-def scan_ip_range(start_ip, end_ip, username, password, max_threads=5):
-    """Scan a range of IP addresses for iLO systems"""
-    start = ipaddress.IPv4Address(start_ip)
-    end = ipaddress.IPv4Address(end_ip)
-    
-    ip_list = [str(ipaddress.IPv4Address(ip)) for ip in range(int(start), int(end) + 1)]
+def scan_ip_range(start_ip, end_ip, username, password, max_threads=16):
+    """Scan a range of IP addresses for iLO systems."""
+    try:
+        start = int(ipaddress.IPv4Address(start_ip))
+        end = int(ipaddress.IPv4Address(end_ip))
+    except ipaddress.AddressValueError as e:
+        logger.error(f"Invalid scan range {start_ip}-{end_ip}: {e}")
+        return []
+
+    if start > end:
+        logger.error(f"Scan range start {start_ip} is higher than the end {end_ip}")
+        return []
+
+    if end - start > 4096:
+        logger.error(f"Refusing to scan {end - start + 1} addresses; narrow the range")
+        return []
+
+    ip_list = [str(ipaddress.IPv4Address(ip)) for ip in range(start, end + 1)]
     logger.info(f"Starting scan of {len(ip_list)} IP addresses from {start_ip} to {end_ip}")
-    
-    # Debug: Print credentials being used
-    logger.info(f"Using default iLO credentials - Username: {username}, Password: {'*' * len(password) if password else 'None'}")
-    
+    logger.info(f"Using iLO username: {username}")
+
     results = []
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = {executor.submit(scan_ilo, ip, username, password): ip for ip in ip_list}
-        
-        for future in futures:
-            result = future.result()
-            if result:
-                # For successful results, check if we need to use host-specific credentials
-                # and re-scan if needed
-                mac = result.get("mac_address")
-                if mac and mac != "Unknown":
-                    host_username, host_password = get_ilo_credentials(mac)
-                    if (host_username and host_username != username) or (host_password and host_password != password):
-                        # We have different host-specific credentials, re-scan with those
-                        logger.info(f"Re-scanning {result['ilo_ip']} with host-specific credentials")
-                        new_result = scan_ilo(result['ilo_ip'], host_username, host_password)
-                        if new_result:
-                            results.append(new_result)
-                            continue
-                
-                # Add the original result if no re-scan was done or if re-scan failed
-                results.append(result)
-    
+
+        # as_completed() so a slow host does not stall the rest, and each
+        # result is unwrapped in its own try: one raising future used to abort
+        # the entire scan and discard every host found so far.
+        for future in as_completed(futures):
+            ip = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                logger.warning(f"Scan of {ip} raised an error: {e}")
+                continue
+
+            if not result:
+                continue
+
+            # Re-scan with host-specific credentials when they differ.
+            mac = result.get("mac_address")
+            if mac and mac != "Unknown":
+                host_username, host_password = get_ilo_credentials(mac)
+                if (host_username, host_password) != (username, password):
+                    logger.info(f"Re-scanning {result['ilo_ip']} with host-specific credentials")
+                    try:
+                        new_result = scan_ilo(result["ilo_ip"], host_username, host_password)
+                    except Exception as e:
+                        logger.warning(f"Re-scan of {result['ilo_ip']} failed: {e}")
+                        new_result = None
+
+                    if new_result:
+                        results.append(new_result)
+                        continue
+
+            results.append(result)
+
     logger.info(f"Scan complete. Found {len(results)} iLO systems")
     return results
 
 def update_hosts_config(scan_results):
-    """Update hosts.json with scan results"""
+    """Merge scan results into hosts.json.
+
+    Only hardware-discovered fields are refreshed on an existing host. The
+    previous version also overwrote mac_address, which could silently point an
+    already-approved host at a different NIC.
+    """
     hosts_config = load_hosts_config()
-    hosts_list = hosts_config["hosts"]
+    hosts_list = hosts_config.setdefault("hosts", [])
     updated = 0
     added = 0
-    
+
+    def find_existing(result):
+        serial = result.get("serial_number")
+        mac = format_mac(result.get("mac_address", "")) if result.get("mac_address") != "Unknown" else ""
+
+        for host in hosts_list:
+            # Match on serial first, then on any known MAC.
+            if serial and serial != "Unknown" and host.get("serial_number") == serial:
+                return host
+            if mac:
+                known = [host.get("mac_address", "")] + list(host.get("additional_macs", []))
+                if any(format_mac(k) == mac for k in known if k):
+                    return host
+        return None
+
     for result in scan_results:
-        # Check if host already exists by serial number
-        existing_host = next((host for host in hosts_list if host.get("serial_number") == result["serial_number"] and result["serial_number"] != "Unknown"), None)
-        
-        if existing_host:
-            # Update existing entry
-            existing_host["ilo_ip"] = result["ilo_ip"]
-            existing_host["mac_address"] = result["mac_address"]
-            existing_host["secure_boot_status"] = result["secure_boot_status"]
-            updated += 1
-        else:
-            # Add new entry
+        existing = find_existing(result)
+
+        if existing is None:
             hosts_list.append(result)
             added += 1
-    
-    # Save updated config
+            continue
+
+        # Refresh only what the scan actually discovered.
+        for field in ("ilo_ip", "model", "manufacturer", "bios_version",
+                      "secure_boot_status", "additional_macs"):
+            if result.get(field):
+                existing[field] = result[field]
+
+        if not existing.get("serial_number") and result.get("serial_number") != "Unknown":
+            existing["serial_number"] = result["serial_number"]
+
+        # Adopt the discovered MAC only when the host does not have one yet.
+        if not existing.get("mac_address") and result.get("mac_address") != "Unknown":
+            existing["mac_address"] = result["mac_address"]
+
+        updated += 1
+
     hosts_config["hosts"] = hosts_list
     save_hosts_config(hosts_config)
-    
+
     logger.info(f"Updated {updated} existing hosts and added {added} new hosts")
     return updated, added
 
 def main():
     """Main entry point"""
+    parser = argparse.ArgumentParser(description="Scan a range of iLO interfaces for HPE servers")
+    parser.add_argument("--start", help="First iLO IP to scan (defaults to global_config.json)")
+    parser.add_argument("--end", help="Last iLO IP to scan (defaults to global_config.json)")
+    parser.add_argument("--threads", type=int, default=16, help="Concurrent scans (default: 16)")
+    parser.add_argument("--dry-run", action="store_true", help="Scan but do not write hosts.json")
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+
     config = load_global_config()
-    ilo_config = config["ilo"]
-    
-    # Load default credentials using the new function
+    ilo_config = config.get("ilo", {})
+
     username, password = get_ilo_credentials()
-    
-    # Fall back to global config if not found in credentials.json
-    if not username:
-        username = ilo_config.get("admin_user")
-        logger.info("Using admin_user from global config")
-    
-    if not password:
-        password = ilo_config.get("admin_password")
-        logger.info("Using admin_password from global config")
-    
+
+    # Fall back to global config (deprecated: credentials belong in
+    # credentials.json, which is not world readable).
+    username = username or ilo_config.get("admin_user")
+    password = password or ilo_config.get("admin_password")
+
     if not username or not password:
-        logger.error("iLO credentials not found in configuration")
-        sys.exit(1)
-        
-    # Print the loaded configuration
-    logger.info(f"Loaded iLO scan configuration - Range: {ilo_config['scan_range_start']} to {ilo_config['scan_range_end']}")
-    logger.info(f"Using username: {username}")
-    
-    # Scan the configured IP range
-    scan_results = scan_ip_range(
-        ilo_config["scan_range_start"],
-        ilo_config["scan_range_end"],
-        username,
-        password
-    )
-    
-    # Update the hosts configuration
+        logger.error("iLO credentials not found; set ilo.admin_user / ilo.admin_password in credentials.json")
+        return 1
+
+    start_ip = args.start or ilo_config.get("scan_range_start")
+    end_ip = args.end or ilo_config.get("scan_range_end")
+
+    if not start_ip or not end_ip:
+        logger.error("No iLO scan range configured; set ilo.scan_range_start and ilo.scan_range_end")
+        return 1
+
+    logger.info(f"iLO scan range: {start_ip} to {end_ip}")
+
+    scan_results = scan_ip_range(start_ip, end_ip, username, password, max_threads=args.threads)
+
+    if args.dry_run:
+        print(f"Scan complete (dry run). Found {len(scan_results)} iLO systems; hosts.json not modified.")
+        return 0
+
     updated, added = update_hosts_config(scan_results)
-    
+
     print(f"Scan complete. Found {len(scan_results)} iLO systems.")
     print(f"Updated {updated} existing entries and added {added} new entries.")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

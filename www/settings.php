@@ -70,31 +70,34 @@ function renderSettingsContent($globalConfig) {
                                         </div>
                                         <div class="card-body">
                                             <form method="post">
+                                                <?php echo csrfField(); ?>
                                                 <input type="hidden" name="action" value="save_global_config">
                                                 
                                                 <div class="mb-3">
                                                     <label for="ilo_user" class="form-label">iLO Username:</label>
                                                     <input type="text" class="form-control" id="ilo_user" name="ilo_user" 
-                                                           value="<?php echo htmlspecialchars($globalConfig['ilo']['admin_user']); ?>" required>
+                                                           value="<?php echo h($globalConfig['ilo']['admin_user']); ?>" required>
                                                 </div>
                                                 
                                                 <div class="mb-3">
                                                     <label for="ilo_password" class="form-label">iLO Password:</label>
-                                                    <input type="password" class="form-control" id="ilo_password" name="ilo_password" 
-                                                           value="<?php echo htmlspecialchars($globalConfig['ilo']['admin_password']); ?>" required>
+                                                    <input type="password" class="form-control" id="ilo_password" name="ilo_password"
+                                                           placeholder="<?php echo empty($globalConfig['ilo']['admin_password']) ? 'Not set' : 'Unchanged'; ?>"
+                                                           autocomplete="new-password">
+                                                    <div class="form-text text-muted">Leave blank to keep the current password.</div>
                                                 </div>
                                                 
                                                 <div class="row">
                                                     <div class="col-md-6 mb-3">
                                                         <label for="ilo_scan_start" class="form-label">iLO Scan Range Start:</label>
                                                         <input type="text" class="form-control" id="ilo_scan_start" name="ilo_scan_start" 
-                                                               value="<?php echo htmlspecialchars($globalConfig['ilo']['scan_range_start']); ?>" required>
+                                                               value="<?php echo h($globalConfig['ilo']['scan_range_start']); ?>" required>
                                                     </div>
                                                     
                                                     <div class="col-md-6 mb-3">
                                                         <label for="ilo_scan_end" class="form-label">iLO Scan Range End:</label>
                                                         <input type="text" class="form-control" id="ilo_scan_end" name="ilo_scan_end" 
-                                                               value="<?php echo htmlspecialchars($globalConfig['ilo']['scan_range_end']); ?>" required>
+                                                               value="<?php echo h($globalConfig['ilo']['scan_range_end']); ?>" required>
                                                     </div>
                                                 </div>
                                                 
@@ -115,6 +118,7 @@ function renderSettingsContent($globalConfig) {
                                         <p>Set the default credentials to use when no host-specific credentials are configured.</p>
                                         
                                         <form method="post">
+                                                <?php echo csrfField(); ?>
                                             <input type="hidden" name="action" value="save_default_credentials">
                                             
                                             <div class="row mb-4">
@@ -123,12 +127,14 @@ function renderSettingsContent($globalConfig) {
                                                     <div class="mb-3">
                                                         <label for="default_ilo_username" class="form-label">Default iLO Username:</label>
                                                         <input type="text" class="form-control" id="default_ilo_username" name="default_ilo_username" 
-                                                               value="<?php echo htmlspecialchars($credentials['ilo']['admin_user'] ?? 'Administrator'); ?>">
+                                                               value="<?php echo h($credentials['ilo']['admin_user'] ?? 'Administrator'); ?>">
                                                     </div>
                                                     <div class="mb-3">
                                                         <label for="default_ilo_password" class="form-label">Default iLO Password:</label>
-                                                        <input type="password" class="form-control" id="default_ilo_password" name="default_ilo_password" 
-                                                               value="<?php echo htmlspecialchars($credentials['ilo']['admin_password'] ?? ''); ?>">
+                                                        <input type="password" class="form-control" id="default_ilo_password" name="default_ilo_password"
+                                                               placeholder="<?php echo empty($credentials['ilo']['admin_password']) ? 'Not set' : 'Unchanged'; ?>"
+                                                               autocomplete="new-password">
+                                                        <div class="form-text text-muted">Leave blank to keep the current password.</div>
                                                     </div>
                                                 </div>
                                                 
@@ -136,8 +142,10 @@ function renderSettingsContent($globalConfig) {
                                                     <h6>ESXi Default Credentials</h6>
                                                     <div class="mb-3">
                                                         <label for="default_esxi_password" class="form-label">Default ESXi Root Password:</label>
-                                                        <input type="password" class="form-control" id="default_esxi_password" name="default_esxi_password" 
-                                                               value="<?php echo htmlspecialchars($credentials['esxi']['root_password'] ?? ''); ?>">
+                                                        <input type="password" class="form-control" id="default_esxi_password" name="default_esxi_password"
+                                                               placeholder="<?php echo empty($credentials['esxi']['root_password']) ? 'Not set' : 'Unchanged'; ?>"
+                                                               autocomplete="new-password">
+                                                        <div class="form-text text-muted">Leave blank to keep the current password.</div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -157,6 +165,7 @@ function renderSettingsContent($globalConfig) {
                                         </div>
                                         <div class="card-body">
                                             <form method="post">
+                                                <?php echo csrfField(); ?>
                                                 <input type="hidden" name="action" value="save_auto_registration">
                                                 
                                                 <div class="form-check form-switch mb-3">
@@ -203,7 +212,7 @@ function renderSettingsContent($globalConfig) {
                                                 <div class="mb-3">
                                                     <label for="notification_email" class="form-label">Notification Email:</label>
                                                     <input type="email" class="form-control" id="notification_email" name="notification_email" 
-                                                           value="<?php echo $globalConfig['deployment']['auto_registration']['notification_email'] ?? ''; ?>">
+                                                           value="<?php echo h($globalConfig['deployment']['auto_registration']['notification_email'] ?? ''); ?>">
                                                     <div class="form-text text-muted">Email for new server notifications (leave empty to disable)</div>
                                                 </div>
                                                 
@@ -220,6 +229,7 @@ function renderSettingsContent($globalConfig) {
                                         </div>
                                         <div class="card-body">
                                             <form method="post">
+                                                <?php echo csrfField(); ?>
                                                 <input type="hidden" name="action" value="save_security_settings">
                                                 
                                                 <div class="form-check form-switch mb-3">
@@ -252,31 +262,32 @@ function renderSettingsContent($globalConfig) {
                                 </div>
                                 <div class="card-body">
                                     <form method="post">
+                                                <?php echo csrfField(); ?>
                                         <input type="hidden" name="action" value="save_network_settings">
                                         
                                         <div class="row">
                                             <div class="col-md-3 mb-3">
                                                 <label for="dhcp_start" class="form-label">DHCP Range Start:</label>
                                                 <input type="text" class="form-control" id="dhcp_start" name="dhcp_start" 
-                                                       value="<?php echo htmlspecialchars($globalConfig['network']['dhcp_range_start']); ?>" required>
+                                                       value="<?php echo h($globalConfig['network']['dhcp_range_start']); ?>" required>
                                             </div>
                                             
                                             <div class="col-md-3 mb-3">
                                                 <label for="dhcp_end" class="form-label">DHCP Range End:</label>
                                                 <input type="text" class="form-control" id="dhcp_end" name="dhcp_end" 
-                                                       value="<?php echo htmlspecialchars($globalConfig['network']['dhcp_range_end']); ?>" required>
+                                                       value="<?php echo h($globalConfig['network']['dhcp_range_end']); ?>" required>
                                             </div>
                                             
                                             <div class="col-md-3 mb-3">
                                                 <label for="subnet_mask" class="form-label">Subnet Mask:</label>
                                                 <input type="text" class="form-control" id="subnet_mask" name="subnet_mask" 
-                                                       value="<?php echo htmlspecialchars($globalConfig['network']['subnet_mask']); ?>" required>
+                                                       value="<?php echo h($globalConfig['network']['subnet_mask']); ?>" required>
                                             </div>
                                             
                                             <div class="col-md-3 mb-3">
                                                 <label for="gateway" class="form-label">Gateway:</label>
                                                 <input type="text" class="form-control" id="gateway" name="gateway" 
-                                                       value="<?php echo htmlspecialchars($globalConfig['network']['gateway']); ?>" required>
+                                                       value="<?php echo h($globalConfig['network']['gateway']); ?>" required>
                                             </div>
                                         </div>
                                         
@@ -284,20 +295,20 @@ function renderSettingsContent($globalConfig) {
                                             <div class="col-md-6 mb-3">
                                                 <label for="dns_servers" class="form-label">DNS Servers (comma separated):</label>
                                                 <input type="text" class="form-control" id="dns_servers" name="dns_servers" 
-                                                       value="<?php echo htmlspecialchars(implode(', ', $globalConfig['network']['dns_servers'])); ?>" required>
+                                                       value="<?php echo h(implode(', ', $globalConfig['network']['dns_servers'])); ?>" required>
                                             </div>
                                             
                                             <div class="col-md-6 mb-3">
                                                 <label for="ntp_servers" class="form-label">NTP Servers (comma separated):</label>
                                                 <input type="text" class="form-control" id="ntp_servers" name="ntp_servers" 
-                                                       value="<?php echo htmlspecialchars(implode(', ', $globalConfig['network']['ntp_servers'])); ?>" required>
+                                                       value="<?php echo h(implode(', ', $globalConfig['network']['ntp_servers'])); ?>" required>
                                             </div>
                                         </div>
                                         
                                         <div class="mb-3">
                                             <label for="webserver_ip" class="form-label">Web Server IP:</label>
                                             <input type="text" class="form-control" id="webserver_ip" name="webserver_ip" 
-                                                   value="<?php echo htmlspecialchars($globalConfig['webserver']['ip']); ?>" required>
+                                                   value="<?php echo h($globalConfig['webserver']['ip']); ?>" required>
                                         </div>
                                         
                                         <button type="submit" class="btn btn-primary">
@@ -315,26 +326,27 @@ function renderSettingsContent($globalConfig) {
                                 </div>
                                 <div class="card-body">
                                     <form method="post">
+                                                <?php echo csrfField(); ?>
                                         <input type="hidden" name="action" value="save_kickstart_templates">
                                         
                                         <div class="mb-3">
                                             <label for="std_template" class="form-label">Standard ESXi Template Path:</label>
                                             <input type="text" class="form-control" id="std_template" name="std_template" 
-                                                   value="<?php echo htmlspecialchars($globalConfig['deployment']['kickstart_templates']['standard'] ?? '/srv/autodeploy/templates/kickstart_template_std.cfg'); ?>" required>
+                                                   value="<?php echo h($globalConfig['deployment']['kickstart_templates']['standard'] ?? '/srv/autodeploy/templates/kickstart_template_std.cfg'); ?>" required>
                                             <div class="form-text text-muted">Path to kickstart template for standard ESXi deployments</div>
                                         </div>
                                         
                                         <div class="mb-3">
                                             <label for="vcf_template" class="form-label">VCF Template Path:</label>
                                             <input type="text" class="form-control" id="vcf_template" name="vcf_template" 
-                                                   value="<?php echo htmlspecialchars($globalConfig['deployment']['kickstart_templates']['vcf'] ?? '/srv/autodeploy/templates/kickstart_template_vcf.cfg'); ?>" required>
+                                                   value="<?php echo h($globalConfig['deployment']['kickstart_templates']['vcf'] ?? '/srv/autodeploy/templates/kickstart_template_vcf.cfg'); ?>" required>
                                             <div class="form-text text-muted">Path to kickstart template for VMware Cloud Foundation deployments</div>
                                         </div>
 
                                         <div class="mb-3">
                                             <label for="waiting_template" class="form-label">Waiting Template Path:</label>
                                             <input type="text" class="form-control" id="waiting_template" name="waiting_template" 
-                                                   value="<?php echo htmlspecialchars($globalConfig['deployment']['waiting_template_path'] ?? '/srv/autodeploy/templates/waiting_template.cfg'); ?>" required>
+                                                   value="<?php echo h($globalConfig['deployment']['waiting_template_path'] ?? '/srv/autodeploy/templates/waiting_template.cfg'); ?>" required>
                                             <div class="form-text text-muted">Path to template shown to servers waiting for approval</div>
                                         </div>
                                         
@@ -351,15 +363,16 @@ function renderSettingsContent($globalConfig) {
                                 </div>
                                 <div class="card-body">
                                     <form method="post">
+                                                <?php echo csrfField(); ?>
                                         <input type="hidden" name="action" value="save_esxi_versions">
                                         
                                         <div class="mb-3">
                                             <label for="default_version" class="form-label">Default ESXi Version:</label>
                                             <select class="form-select" id="default_version" name="default_version">
                                                 <?php foreach ($globalConfig['deployment']['esxi_versions'] as $version => $versionConfig): ?>
-                                                <option value="<?php echo htmlspecialchars($version); ?>" 
+                                                <option value="<?php echo h($version); ?>" 
                                                         <?php echo ($globalConfig['deployment']['default_version'] == $version) ? 'selected' : ''; ?>>
-                                                    <?php echo htmlspecialchars($version); ?> - <?php echo htmlspecialchars($versionConfig['description']); ?>
+                                                    <?php echo h($version); ?> - <?php echo h($versionConfig['description']); ?>
                                                 </option>
                                                 <?php endforeach; ?>
                                             </select>
@@ -380,12 +393,12 @@ function renderSettingsContent($globalConfig) {
                                                     <tbody>
                                                         <?php foreach ($globalConfig['deployment']['esxi_versions'] as $version => $versionConfig): ?>
                                                         <tr>
-                                                            <td><?php echo htmlspecialchars($version); ?></td>
-                                                            <td><?php echo htmlspecialchars($versionConfig['path']); ?></td>
-                                                            <td><?php echo htmlspecialchars($versionConfig['description']); ?></td>
+                                                            <td><?php echo h($version); ?></td>
+                                                            <td><?php echo h($versionConfig['path']); ?></td>
+                                                            <td><?php echo h($versionConfig['description']); ?></td>
                                                             <td>
                                                                 <button type="button" class="btn btn-sm btn-danger" 
-                                                                        onclick="if(confirm('Are you sure you want to remove this version?')) { document.getElementById('remove_version').value = '<?php echo htmlspecialchars($version); ?>'; this.form.submit(); }">
+                                                                        onclick="if(confirm('Are you sure you want to remove this version?')) { document.getElementById('remove_version').value = '<?php echo h($version); ?>'; this.form.submit(); }">
                                                                     <i class="fas fa-trash-alt"></i> Remove
                                                                 </button>
                                                             </td>
@@ -467,7 +480,7 @@ function renderSettingsContent($globalConfig) {
                                                 <select class="form-select" id="log-file" onchange="loadLogFile(this.value)">
                                                     <option value="">Select a log file...</option>
                                                     <?php foreach ($logFiles as $file): ?>
-                                                    <option value="<?php echo htmlspecialchars($file); ?>"><?php echo htmlspecialchars($file); ?></option>
+                                                    <option value="<?php echo h($file); ?>"><?php echo h($file); ?></option>
                                                     <?php endforeach; ?>
                                                 </select>
                                             </div>
@@ -715,63 +728,100 @@ function processSettingsActions($action, $postData) {
             if (!$globalConfig) {
                 $result['error'] = "Cannot update network settings - global configuration not found";
                 break;
-                    
             }
-            
-                        // Update DHCP server configuration using the restricted script
-            $dhcpStart = escapeshellarg($postData['dhcp_start']);
-            $dhcpEnd = escapeshellarg($postData['dhcp_end']);
-            $subnetMask = escapeshellarg($postData['subnet_mask']);
-            $gateway = escapeshellarg($postData['gateway']);
-            $dnsServers = escapeshellarg(implode(', ', array_map('trim', explode(',', $postData['dns_servers']))));
-            $webserverIp = escapeshellarg($postData['webserver_ip']);
 
-            // Execute the script with sudo
-            $command = "sudo /usr/local/bin/update_dhcp_config.sh $dhcpStart $dhcpEnd $subnetMask $gateway $dnsServers $webserverIp 2>&1";
+            // Validate everything *before* touching the DHCP server. The old
+            // code shelled out first and only then looked at the values, so a
+            // typo could take DHCP down and still be written to the config.
+            $dhcpStart   = trim((string)($postData['dhcp_start'] ?? ''));
+            $dhcpEnd     = trim((string)($postData['dhcp_end'] ?? ''));
+            $subnetMask  = trim((string)($postData['subnet_mask'] ?? ''));
+            $gateway     = trim((string)($postData['gateway'] ?? ''));
+            $webserverIp = trim((string)($postData['webserver_ip'] ?? ''));
+
+            $dnsServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['dns_servers'] ?? ''))), 'strlen'));
+            $ntpServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['ntp_servers'] ?? ''))), 'strlen'));
+
+            $validationError = '';
+
+            foreach ([
+                'DHCP range start' => $dhcpStart,
+                'DHCP range end'   => $dhcpEnd,
+                'gateway'          => $gateway,
+                'web server IP'    => $webserverIp,
+            ] as $label => $value) {
+                if (!isValidIpv4($value)) {
+                    $validationError = "Invalid $label address";
+                    break;
+                }
+            }
+
+            if ($validationError === '' && !isValidNetmask($subnetMask)) {
+                $validationError = 'Invalid subnet mask';
+            }
+
+            if ($validationError === '' && ip2long($dhcpStart) > ip2long($dhcpEnd)) {
+                $validationError = 'The DHCP range start must not be higher than the range end';
+            }
+
+            if ($validationError === '' && $dnsServers === []) {
+                $validationError = 'At least one DNS server is required';
+            }
+
+            foreach ($dnsServers as $dns) {
+                if ($validationError === '' && !isValidIp($dns)) {
+                    $validationError = "Invalid DNS server address: $dns";
+                }
+            }
+
+            foreach ($ntpServers as $ntp) {
+                if ($validationError === '' && !isValidIp($ntp) && !isValidHostname($ntp)) {
+                    $validationError = "Invalid NTP server: $ntp";
+                }
+            }
+
+            if ($validationError !== '') {
+                $result['error'] = $validationError;
+                break;
+            }
+
+            // Persist the configuration first, so the stored state always
+            // matches what we asked the DHCP server to serve.
+            $globalConfig['network']['dhcp_range_start'] = $dhcpStart;
+            $globalConfig['network']['dhcp_range_end'] = $dhcpEnd;
+            $globalConfig['network']['subnet_mask'] = $subnetMask;
+            $globalConfig['network']['gateway'] = $gateway;
+            $globalConfig['network']['dns_servers'] = $dnsServers;
+            $globalConfig['network']['ntp_servers'] = $ntpServers;
+            $globalConfig['webserver']['ip'] = $webserverIp;
+            $globalConfig['webserver']['url'] = 'http://' . $webserverIp;
+
+            if (!saveJsonConfig($globalConfigPath, $globalConfig)) {
+                $result['error'] = "Failed to save network settings";
+                break;
+            }
+
+            // Update the DHCP server through the restricted sudo helper.
+            $command = sprintf(
+                'sudo -n /usr/local/bin/update_dhcp_config.sh %s %s %s %s %s %s 2>&1',
+                escapeshellarg($dhcpStart),
+                escapeshellarg($dhcpEnd),
+                escapeshellarg($subnetMask),
+                escapeshellarg($gateway),
+                escapeshellarg(implode(',', $dnsServers)),
+                escapeshellarg($webserverIp)
+            );
+
+            $output = [];
+            $returnCode = 1;
             exec($command, $output, $returnCode);
 
-            // Process the results
             if ($returnCode !== 0) {
-                $errorOutput = implode("\n", $output);
-                logMessage("Failed to update DHCP configuration: $errorOutput", 'ERROR');
-                $result['error'] = "Network settings were saved, but failed to update DHCP configuration. See logs for details.";
+                logMessage('Failed to update DHCP configuration: ' . implode(' | ', $output), 'ERROR');
+                $result['error'] = 'Network settings were saved, but the DHCP configuration could not be updated. See the logs for details.';
             } else {
-                logMessage("DHCP configuration updated successfully", 'INFO');
-                if (empty($result['message'])) {
-                    $result['message'] = "Network settings and DHCP configuration saved successfully";
-                } else {
-                    $result['message'] .= " and DHCP configuration updated";
-                }
-            }
-            
-            // Update network settings
-            $globalConfig['network']['dhcp_range_start'] = $postData['dhcp_start'];
-            $globalConfig['network']['dhcp_range_end'] = $postData['dhcp_end'];
-            $globalConfig['network']['subnet_mask'] = $postData['subnet_mask'];
-            $globalConfig['network']['gateway'] = $postData['gateway'];
-            
-            // Parse DNS servers
-            $dnsServers = explode(',', $postData['dns_servers']);
-            $globalConfig['network']['dns_servers'] = array_map('trim', $dnsServers);
-            
-            // Parse NTP servers
-            $ntpServers = explode(',', $postData['ntp_servers']);
-            $globalConfig['network']['ntp_servers'] = array_map('trim', $ntpServers);
-            
-            // Update webserver IP
-            $globalConfig['webserver']['ip'] = $postData['webserver_ip'];
-            $globalConfig['webserver']['url'] = 'http://' . $postData['webserver_ip'];
-            
-            // Save the updated configuration
-            if (saveJsonConfig($globalConfigPath, $globalConfig)) {
-                if (empty($result['message'])) {
-                    $result['message'] = "Network settings saved successfully";
-                } else {
-                    // Append to existing message about DHCP
-                    $result['message'] .= " and network settings saved successfully";
-                }
-            } else {
-                $result['error'] = "Failed to save network settings";
+                logMessage('DHCP configuration updated successfully');
+                $result['message'] = 'Network settings saved and the DHCP configuration was updated';
             }
             break;
             
@@ -783,12 +833,31 @@ function processSettingsActions($action, $postData) {
                 break;
             }
             
+            $scanStart = trim((string)($postData['ilo_scan_start'] ?? ''));
+            $scanEnd = trim((string)($postData['ilo_scan_end'] ?? ''));
+
+            if (!isValidIpv4($scanStart) || !isValidIpv4($scanEnd)) {
+                $result['error'] = 'The iLO scan range must contain valid IPv4 addresses';
+                break;
+            }
+
+            if (ip2long($scanStart) > ip2long($scanEnd)) {
+                $result['error'] = 'The iLO scan range start must not be higher than the range end';
+                break;
+            }
+
             // Update iLO settings
-            $globalConfig['ilo']['admin_user'] = $postData['ilo_user'];
-            $globalConfig['ilo']['admin_password'] = $postData['ilo_password'];
-            $globalConfig['ilo']['scan_range_start'] = $postData['ilo_scan_start'];
-            $globalConfig['ilo']['scan_range_end'] = $postData['ilo_scan_end'];
-            
+            $globalConfig['ilo']['admin_user'] = trim((string)($postData['ilo_user'] ?? ''));
+            $globalConfig['ilo']['scan_range_start'] = $scanStart;
+            $globalConfig['ilo']['scan_range_end'] = $scanEnd;
+
+            // An empty password field means "keep the current password";
+            // browsers never repopulate password inputs, so treating blank as
+            // "clear it" silently wiped the stored credential on every save.
+            if (($postData['ilo_password'] ?? '') !== '') {
+                $globalConfig['ilo']['admin_password'] = $postData['ilo_password'];
+            }
+
             // Save the updated configuration
             if (saveJsonConfig($globalConfigPath, $globalConfig)) {
                 $result['message'] = "iLO settings saved successfully";
@@ -930,61 +999,28 @@ function processSettingsActions($action, $postData) {
             }
             
             // Update default iLO credentials
-            $credentials['ilo']['admin_user'] = $postData['default_ilo_username'] ?? 'Administrator';
-            $credentials['ilo']['admin_password'] = $postData['default_ilo_password'] ?? '';
-            
+            $credentials['ilo']['admin_user'] = trim((string)($postData['default_ilo_username'] ?? 'Administrator'));
+
+            // Blank password fields mean "keep the current value".
+            if (($postData['default_ilo_password'] ?? '') !== '') {
+                $credentials['ilo']['admin_password'] = $postData['default_ilo_password'];
+            }
+
             // Update default ESXi credentials
-            $credentials['esxi']['root_password'] = $postData['default_esxi_password'] ?? '';
-            
-            // Save updated credentials
-            $credentialsPath = '/srv/autodeploy/config/credentials.json';
-            $savedOk = file_put_contents($credentialsPath, json_encode($credentials, JSON_PRETTY_PRINT));
-            
+            if (($postData['default_esxi_password'] ?? '') !== '') {
+                $credentials['esxi']['root_password'] = $postData['default_esxi_password'];
+            }
+
+            // Save updated credentials (atomically, mode 0640)
+            $savedOk = saveSecureCredentials($credentials);
+
             if ($savedOk) {
                 $result['message'] = "Default credentials updated successfully";
             } else {
                 $result['error'] = "Failed to save default credentials";
             }
             break;
-    
-          // Add to processSettingsActions in settings.php
-      case 'save_default_credentials':
-          // Load existing credentials
-          $credentials = loadSecureCredentials();
-          if (!$credentials) {
-              $credentials = [
-                  'ilo' => ['hosts' => []],
-                  'esxi' => ['hosts' => []]
-              ];
-          }
-          
-          // Ensure structure exists
-          if (!isset($credentials['ilo'])) {
-              $credentials['ilo'] = [];
-          }
-          
-          if (!isset($credentials['esxi'])) {
-              $credentials['esxi'] = [];
-          }
-          
-          // Update default iLO credentials
-          $credentials['ilo']['admin_user'] = $postData['default_ilo_username'] ?? 'Administrator';
-          $credentials['ilo']['admin_password'] = $postData['default_ilo_password'] ?? '';
-          
-          // Update default ESXi credentials
-          $credentials['esxi']['root_password'] = $postData['default_esxi_password'] ?? '';
-          
-          // Save updated credentials
-          $credentialsPath = '/srv/autodeploy/config/credentials.json';
-          $savedOk = file_put_contents($credentialsPath, json_encode($credentials, JSON_PRETTY_PRINT));
-          
-          if ($savedOk) {
-              $result['message'] = "Default credentials updated successfully";
-          } else {
-              $result['error'] = "Failed to save default credentials";
-          }
-          break;
-    
+
     }
     
     return $result;
