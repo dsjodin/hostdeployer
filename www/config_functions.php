@@ -1,194 +1,64 @@
 <?php
 /**
  * ESXi Auto-deployment - Configuration Functions
- * 
- * Functions for loading, saving, and handling configuration data
+ *
+ * loadJsonConfig(), saveJsonConfig(), loadSecureCredentials(), findHostByMac()
+ * and updateHostByMac() used to be redefined here, shadowing the copies in
+ * lib/utils.php with weaker (non-atomic, non-locking) implementations. They
+ * now come from lib/utils.php; only the admin-specific helpers remain.
  */
 
-/**
- * Load JSON config file
- * 
- * @param string $path Path to JSON config file
- * @return array|null Config array or null if failed
- */
-function loadJsonConfig($path) {
-    if (!file_exists($path)) {
-        logMessage("Config file not found: $path", 'ERROR');
-        return null;
-    }
-    
-    $content = file_get_contents($path);
-    if ($content === false) {
-        logMessage("Failed to read config file: $path", 'ERROR');
-        return null;
-    }
-    
-    $config = json_decode($content, true);
-    if ($config === null) {
-        logMessage("Failed to parse JSON config: $path", 'ERROR');
-        return null;
-    }
-    
-    return $config;
-}
+require_once __DIR__ . '/../lib/utils.php';
 
 /**
- * Save JSON config file
- * 
- * @param string $path Path to JSON config file
- * @param array $config Config array
- * @return bool True if successful, false otherwise
- */
-function saveJsonConfig($path, $config) {
-    try {
-        $jsonString = json_encode($config, JSON_PRETTY_PRINT);
-        if (file_put_contents($path, $jsonString) === false) {
-            logMessage("Failed to write config file: $path", 'ERROR');
-            return false;
-        }
-        return true;
-    } catch (Exception $e) {
-        logMessage("Exception saving config: " . $e->getMessage(), 'ERROR');
-        return false;
-    }
-}
-
-/**
- * Load secure credentials from a separate config file
- * 
- * @param string $credentialType Type of credential to load (ilo, esxi, db)
- * @return array|null Credentials array or null if not found
- */
-function loadSecureCredentials($credentialType = null) {
-    $credentialsPath = '/srv/autodeploy/config/credentials.json';
-    
-    if (!file_exists($credentialsPath)) {
-        logMessage("Credentials file not found: $credentialsPath", 'ERROR');
-        return null;
-    }
-    
-    $content = file_get_contents($credentialsPath);
-    if ($content === false) {
-        logMessage("Failed to read credentials file", 'ERROR');
-        return null;
-    }
-    
-    $credentials = json_decode($content, true);
-    if ($credentials === null) {
-        logMessage("Failed to parse credentials JSON", 'ERROR');
-        return null;
-    }
-    
-    // If specific credential type requested, return just that section
-    if ($credentialType !== null) {
-        return isset($credentials[$credentialType]) ? $credentials[$credentialType] : null;
-    }
-    
-    return $credentials;
-}
-
-/**
- * Categorize hosts by status
- * 
- * @param array $hostsConfig Full hosts configuration
- * @return array Array containing lists of hosts by status
+ * Split the host list into buckets by deployment status.
+ *
+ * @param array|null $hostsConfig Full hosts configuration
+ * @return array{0: array, 1: array, 2: array, 3: array} pending, approved, deploying, deployed
  */
 function categorizeHosts($hostsConfig) {
-    $pendingHosts = [];
-    $approvedHosts = [];
-    $deployingHosts = [];
-    $deployedHosts = [];
-    
-    if (!$hostsConfig || !isset($hostsConfig['hosts'])) {
-        return [$pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts];
+    $buckets = [
+        'pending'   => [],
+        'approved'  => [],
+        'deploying' => [],
+        'deployed'  => [],
+    ];
+
+    if (!is_array($hostsConfig) || !isset($hostsConfig['hosts']) || !is_array($hostsConfig['hosts'])) {
+        return array_values($buckets);
     }
-    
+
     foreach ($hostsConfig['hosts'] as $host) {
-        $status = isset($host['deployment_status']) ? $host['deployment_status'] : 'unknown';
-        switch ($status) {
-            case 'pending':
-                $pendingHosts[] = $host;
-                break;
-            case 'approved':
-                $approvedHosts[] = $host;
-                break;
-            case 'deploying':
-                $deployingHosts[] = $host;
-                break;
-            case 'deployed':
-                $deployedHosts[] = $host;
-                break;
-            default:
-                // Unknown status - treat as pending
-                $pendingHosts[] = $host;
-                break;
-        }
+        $status = $host['deployment_status'] ?? 'unknown';
+        // Unknown statuses are surfaced as pending so they cannot be missed.
+        $bucket = isset($buckets[$status]) ? $status : 'pending';
+        $buckets[$bucket][] = $host;
     }
-    
-    return [$pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts];
+
+    return array_values($buckets);
 }
 
 /**
- * Find a host by MAC address
- * 
- * @param string $mac MAC address to find
- * @param array $hostsConfig Full hosts configuration array
- * @return array|null Host entry or null if not found
+ * Return the list of ESXi versions that are actually installed on disk.
+ *
+ * A version is usable only when its directory and boot.cfg exist; the UI
+ * previously offered versions that would fail at boot time.
+ *
+ * @param array|null $globalConfig Global configuration
+ * @return array<string, array> Version name => version config, augmented with 'available'
  */
-function findHostByMac($mac, $hostsConfig) {
-    if (!$hostsConfig || !isset($hostsConfig['hosts'])) {
-        return null;
+function getEsxiVersions($globalConfig) {
+    $versions = $globalConfig['deployment']['esxi_versions'] ?? [];
+    if (!is_array($versions)) {
+        return [];
     }
-    
-    $formattedMac = formatMac($mac);
-    
-    foreach ($hostsConfig['hosts'] as $host) {
-        if (formatMac($host['mac_address']) === $formattedMac) {
-            return $host;
-        }
-    }
-    
-    return null;
-}
 
-/**
- * Update host by MAC address
- * 
- * @param string $mac MAC address of host to update
- * @param array $newData New host data
- * @param string $configPath Path to hosts configuration file (optional)
- * @return bool True if successful, false otherwise
- */
-function updateHostByMac($mac, $newData, $configPath = null) {
-    if ($configPath === null) {
-        $globalConfig = loadJsonConfig('/srv/autodeploy/config/global_config.json');
-        if (!$globalConfig) {
-            return false;
-        }
-        
-        $configPath = $globalConfig['paths']['hosts_config'];
+    foreach ($versions as $name => &$version) {
+        $path = $version['path'] ?? (AUTODEPLOY_ROOT . '/esxi/' . $name);
+        $version['path'] = $path;
+        $version['available'] = is_dir($path) && is_file($path . '/boot.cfg');
     }
-    
-    $hostsConfig = loadJsonConfig($configPath);
-    if (!$hostsConfig) {
-        return false;
-    }
-    
-    $formattedMac = formatMac($mac);
-    $updated = false;
-    
-    foreach ($hostsConfig['hosts'] as &$host) {
-        if (formatMac($host['mac_address']) === $formattedMac) {
-            // Merge new data with existing host data
-            $host = array_merge($host, $newData);
-            $updated = true;
-            break;
-        }
-    }
-    
-    if (!$updated) {
-        return false;
-    }
-    
-    return saveJsonConfig($configPath, $hostsConfig);
+    unset($version);
+
+    return $versions;
 }

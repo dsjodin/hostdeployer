@@ -53,6 +53,7 @@ function renderScanContent($globalConfig, $scanOutput) {
                         </div>
                         
                         <form method="post" class="mb-4">
+                            <?php echo csrfField(); ?>
                             <input type="hidden" name="action" value="scan_ilo">
                             <button type="submit" class="btn btn-primary">
                                 <i class="bi bi-search me-2"></i>Start iLO Scan
@@ -81,8 +82,10 @@ function renderScanContent($globalConfig, $scanOutput) {
                         <p class="card-text">If you know the MAC address of a server you want to deploy, you can manually register it here.</p>
                         
                         <form method="post" class="needs-validation" novalidate>
+                            <?php echo csrfField(); ?>
                             <input type="hidden" name="action" value="add_host">
-                            
+                            <input type="hidden" name="fqdn" id="fqdn-manual" value="">
+
                             <div class="mb-3">
                                 <label for="mac-manual" class="form-label required-label">MAC Address</label>
                                 <input type="text" class="form-control" id="mac-manual" name="mac" required placeholder="00:11:22:33:44:55">
@@ -163,26 +166,73 @@ function renderScanContent($globalConfig, $scanOutput) {
     
     <!-- Form validation script -->
     <script>
-    // Example starter JavaScript for disabling form submissions if there are invalid fields
     (function () {
-        'use strict'
+        'use strict';
 
-        // Fetch all the forms we want to apply custom Bootstrap validation styles to
-        var forms = document.querySelectorAll('.needs-validation')
+        // Bootstrap-style client side validation.
+        document.querySelectorAll('.needs-validation').forEach(function (form) {
+            form.addEventListener('submit', function (event) {
+                if (!form.checkValidity()) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                form.classList.add('was-validated');
+            }, false);
+        });
 
-        // Loop over them and prevent submission
-        Array.prototype.slice.call(forms)
-            .forEach(function (form) {
-                form.addEventListener('submit', function (event) {
-                    if (!form.checkValidity()) {
-                        event.preventDefault()
-                        event.stopPropagation()
-                    }
-
-                    form.classList.add('was-validated')
-                }, false)
-            })
-    })()
+        // processAddHostAction() requires an FQDN; derive one from the
+        // hostname so the manual registration form does not fail validation
+        // server side.
+        var hostnameInput = document.getElementById('hostname-manual');
+        var fqdnInput = document.getElementById('fqdn-manual');
+        if (hostnameInput && fqdnInput) {
+            var syncFqdn = function () {
+                var value = hostnameInput.value.trim();
+                fqdnInput.value = (value === '' || value.indexOf('.') !== -1) ? value : value + '.local';
+            };
+            hostnameInput.addEventListener('input', syncFqdn);
+            syncFqdn();
+        }
+    })();
     </script>
     <?php
+}
+
+/**
+ * Process actions submitted from the Hardware Scan tab.
+ *
+ * This handler was referenced by the dashboard router but never defined, so
+ * both buttons on this tab produced a fatal "undefined function" error.
+ *
+ * @param string $action   Requested action
+ * @param array  $postData POST data
+ * @return array{message: string, error: string, scanOutput: string}
+ */
+function processScanActions($action, $postData) {
+    $result = ['message' => '', 'error' => '', 'scanOutput' => ''];
+
+    switch ($action) {
+        case 'scan_ilo':
+            logMessage('Starting iLO network scan');
+            $scan = runIloScanner();
+
+            $result['scanOutput'] = $scan['output'];
+
+            if ($scan['success']) {
+                $result['message'] = 'iLO scan completed. Discovered servers appear under Manage Hosts > Pending.';
+            } else {
+                $result['error'] = 'The iLO scan failed. See the scan output and the ilo_scanner log for details.';
+            }
+            break;
+
+        case 'add_host':
+            // The manual registration form lives on this tab but is handled
+            // by the shared host editor logic.
+            $hostResult = processAddHostAction($postData);
+            $result['message'] = $hostResult['message'];
+            $result['error'] = $hostResult['error'];
+            break;
+    }
+
+    return $result;
 }

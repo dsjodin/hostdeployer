@@ -2,243 +2,190 @@
 /**
  * ESXi Auto-deployment Admin Dashboard
  *
- * This is the central control interface for the ESXi deployment system.
- * It uses a modular approach with separate files for each tab.
+ * Central control interface. Tab content and per-tab action handlers live in
+ * separate files that are included from here.
  */
 
-// Define a constant to prevent direct access to tab files
+// Guard used by the tab files to refuse direct HTTP access.
 define('ADMIN_DASHBOARD', true);
 
-// Configure error handling
-ini_set('display_errors', 0);
-ini_set('log_errors', 1);
-ini_set('error_log', '/srv/autodeploy/logs/php_errors.log');
+require_once __DIR__ . '/../lib/auth.php';
 
-// Enable error reporting during development
-// Comment this out in production
-// error_reporting(E_ALL);
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', AUTODEPLOY_LOG_DIR . '/php_errors.log');
 
-// Log important information
+/**
+ * @param string $message Message
+ * @param string $level   Level
+ */
 function dashboard_log($message, $level = 'INFO') {
-    $logFile = '/srv/autodeploy/logs/admin_dashboard.log';
-    $timestamp = date('Y-m-d H:i:s');
-    $logMessage = "[$timestamp] [$level] $message\n";
-    file_put_contents($logFile, $logMessage, FILE_APPEND);
+    logMessage($message, $level, AUTODEPLOY_LOG_DIR . '/admin_dashboard.log');
 }
 
-// Include authentication library first since we need it immediately
-require_once '/srv/autodeploy/lib/auth.php';
-
+// ---------------------------------------------------------------------------
 // Authentication
-try {
-    // Only log successful authentication on initial page load (when no tab is specified)
-    $logAuth = !isset($_SERVER['HTTP_REFERER']) || !strpos($_SERVER['HTTP_REFERER'], $_SERVER['HTTP_HOST']);
-    
-    $authenticated = authenticate($logAuth);
-    if (!$authenticated) {
-        // Auth function handles the redirect to login page
-        exit;
-    }
-    
-    // Only log this on initial authentication, not on subsequent page views
-    if ($logAuth) {
-        dashboard_log("User {$_SESSION['username']} authenticated successfully", 'INFO');
-    }
-} catch (Exception $e) {
-    dashboard_log("Authentication exception: " . $e->getMessage(), 'ERROR');
-    http_response_code(500);
-    echo "<h1>Authentication Error</h1>";
-    echo "<p>There was a problem with the authentication system.</p>";
-    echo "<p>Please check server logs for details.</p>";
-    exit;
+// ---------------------------------------------------------------------------
+
+// Log a successful authentication only when the visitor arrived from outside
+// the dashboard, so ordinary tab navigation does not spam the auth log.
+$referer = $_SERVER['HTTP_REFERER'] ?? '';
+$logAuth = $referer === '' || stripos($referer, (string)($_SERVER['HTTP_HOST'] ?? '')) === false;
+
+$authenticated = authenticate($logAuth);
+if (!$authenticated) {
+    exit; // authenticate() already redirected.
 }
 
-// Verify required files and paths after authentication
+// ---------------------------------------------------------------------------
+// Includes
+// ---------------------------------------------------------------------------
+
 $requiredFiles = [
-    // Shared function files
-    'utility_functions.php' => 'Utility Functions',
-    'config_functions.php' => 'Configuration Functions',
-    'host_functions.php' => 'Host Management Functions',
-    'hardware_functions.php' => 'Hardware Functions',
-    // Tab files
-    'dashboard.php' => 'Dashboard Tab',
-    'hosts.php' => 'Hosts Tab',
-    'scan.php' => 'Scan Tab',
-    'settings.php' => 'Settings Tab',
-    'templates.php' => 'Templates Tab',
-    // UI components
-    'admin_ui.php' => 'Admin UI'
+    'utility_functions.php',
+    'config_functions.php',
+    'host_functions.php',
+    'hardware_functions.php',
+    'dashboard.php',
+    'hosts.php',
+    'scan.php',
+    'settings.php',
+    'templates.php',
+    'admin_ui.php',
 ];
 
+foreach ($requiredFiles as $file) {
+    // Resolve against this file's directory rather than the CGI working
+    // directory, which is not guaranteed to be the script's own directory.
+    $path = __DIR__ . '/' . $file;
 
-
-foreach ($requiredFiles as $file => $description) {
-    if (!file_exists($file)) {
-        dashboard_log("Missing required file: $file ($description)", 'ERROR');
+    if (!is_file($path)) {
+        dashboard_log("Missing required file: $file", 'ERROR');
         http_response_code(500);
-        echo "<h1>Setup Error</h1>";
-        echo "<p>Missing required file: $description</p>";
-        echo "<p>Please check server configuration and logs.</p>";
+        echo '<h1>Setup Error</h1><p>Missing required file. Please check the server logs.</p>';
         exit;
     }
+
+    require_once $path;
 }
 
-// Include required files
-try {
-    // First include utility functions as other files depend on them
-    require_once 'utility_functions.php';
-    
-    // Include shared function files
-    require_once 'config_functions.php';
-    require_once 'host_functions.php';
-    require_once 'hardware_functions.php';
-    
-    // Include tab files
-    require_once 'dashboard.php';
-    require_once 'hosts.php';
-    require_once 'scan.php';
-    require_once 'settings.php';
-    require_once 'templates.php';
-    
-    // Include UI components
-    require_once 'admin_ui.php';
-} catch (Exception $e) {
-    dashboard_log("Exception loading required files: " . $e->getMessage(), 'ERROR');
-    http_response_code(500);
-    echo "<h1>Setup Error</h1>";
-    echo "<p>Error loading required files. See logs for details.</p>";
-    exit;
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+$validTabs = ['dashboard', 'hosts', 'scan', 'settings', 'templates'];
+$activeTab = $_GET['tab'] ?? 'dashboard';
+if (!in_array($activeTab, $validTabs, true)) {
+    $activeTab = 'dashboard';
 }
 
-// Process form submissions
 $message = '';
 $error = '';
 $scanOutput = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Check for logout action
-    if (isset($_POST['action']) && $_POST['action'] === 'logout') {
+    $action = (string)($_POST['action'] ?? '');
+
+    // Every state-changing request must carry a valid CSRF token. Without
+    // this, any page the operator visits could silently approve a host,
+    // rewrite the DHCP configuration or delete a template.
+    if (!verifyCsrfToken($_POST)) {
+        dashboard_log("Rejected action '$action' with invalid CSRF token", 'WARNING');
+        $error = 'Your session has expired or the request could not be verified. Please try again.';
+    } elseif ($action === 'logout') {
         logout();
         exit;
-    }
-    
-    $action = isset($_POST['action']) ? $_POST['action'] : '';
-    dashboard_log("Processing form action: $action", 'INFO');
-    
-    // Process the action through the appropriate handler based on current tab
-    try {
-        $activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'dashboard';
-        
-        // Determine which tab's action processor to use
-        switch ($activeTab) {
-            case 'hosts':
-                $result = processHostsActions($action, $_POST);
-                break;
-                
-            case 'scan':
-                $result = processScanActions($action, $_POST);
-                break;
-                
-            case 'settings':
-                $result = processSettingsActions($action, $_POST);
-                break;
-                
-            case 'templates': // Add this case
-                // Handle download requests separately
-                if ($action === 'download_template') {
-                    processDownloadRequest($_POST);
-                    exit; // Download handling will exit
-                }
-                      // Process other template actions
-            $result = processTemplatesActions($action, $_POST, $_FILES);
-            break;
-            
-        case 'dashboard':
-        default:
-            $result = processDashboardActions($action, $_POST);
-            break;
-    }
-        
-        // Extract result values
-        if (isset($result['message'])) {
-            $message = $result['message'];
+    } else {
+        dashboard_log("Processing form action: $action");
+
+        try {
+            switch ($activeTab) {
+                case 'hosts':
+                    $result = processHostsActions($action, $_POST);
+                    break;
+
+                case 'scan':
+                    $result = processScanActions($action, $_POST);
+                    break;
+
+                case 'settings':
+                    $result = processSettingsActions($action, $_POST);
+                    break;
+
+                case 'templates':
+                    if ($action === 'download_template') {
+                        processDownloadRequest($_POST);
+                        exit; // processDownloadRequest() sends the file and exits.
+                    }
+                    $result = processTemplatesActions($action, $_POST, $_FILES);
+                    break;
+
+                case 'dashboard':
+                default:
+                    $result = processDashboardActions($action, $_POST);
+                    break;
+            }
+
+            $message = $result['message'] ?? '';
+            $error = $result['error'] ?? '';
+            $scanOutput = $result['scanOutput'] ?? '';
+        } catch (Throwable $e) {
+            dashboard_log('Exception processing form action: ' . $e->getMessage(), 'ERROR');
+            $error = 'An error occurred processing your request. See the logs for details.';
         }
-        
-        if (isset($result['error'])) {
-            $error = $result['error'];
-        }
-        
-        if (isset($result['scanOutput'])) {
-            $scanOutput = $result['scanOutput'];
-        }
-    } catch (Exception $e) {
-        dashboard_log("Exception processing form action: " . $e->getMessage(), 'ERROR');
-        $error = "An error occurred processing your request. See logs for details.";
     }
 }
 
-// Load configurations
-try {
-    $globalConfig = loadJsonConfig('/srv/autodeploy/config/global_config.json');
-    $hostsConfig = loadJsonConfig('/srv/autodeploy/config/hosts.json');
-} catch (Exception $e) {
-    dashboard_log("Exception loading configurations: " . $e->getMessage(), 'ERROR');
-    $error = "Failed to load system configurations";
-    $globalConfig = null;
-    $hostsConfig = null;
+// ---------------------------------------------------------------------------
+// Data for rendering
+// ---------------------------------------------------------------------------
+
+$globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+$hostsConfig = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
+
+if ($globalConfig === null) {
+    dashboard_log('Failed to load global configuration', 'ERROR');
 }
 
-// Process data for display
-if ($hostsConfig) {
-    list($pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts) = categorizeHosts($hostsConfig);
-} else {
-    $pendingHosts = $approvedHosts = $deployingHosts = $deployedHosts = [];
-}
+[$pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts] = categorizeHosts($hostsConfig);
 
-// Get active tab (default to dashboard)
-$activeTab = isset($_GET['tab']) ? $_GET['tab'] : 'dashboard';
-$validTabs = ['dashboard', 'hosts', 'scan', 'settings', 'templates'];
-if (!in_array($activeTab, $validTabs)) {
-    $activeTab = 'dashboard';
-}
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
 
-// Render the page
 renderHeader();
 
-// Show messages if any
-if ($message) {
+if ($message !== '') {
     renderAlert($message, 'success');
 }
 
-if ($error) {
+if ($error !== '') {
     renderAlert($error, 'danger');
 }
 
-// Render tabs navigation
 renderTabsNav($activeTab);
 
-// Render active tab content
 switch ($activeTab) {
-    case 'dashboard':
-        renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts);
-        break;
-        
     case 'hosts':
         renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts);
         break;
-        
+
     case 'scan':
         renderScanContent($globalConfig, $scanOutput);
         break;
-        
+
     case 'settings':
         renderSettingsContent($globalConfig);
         break;
 
-    case 'templates': // Add this case
+    case 'templates':
         renderTemplatesContent($globalConfig);
+        break;
+
+    case 'dashboard':
+    default:
+        renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts);
         break;
 }
 
-// Render the footer
 renderFooter();

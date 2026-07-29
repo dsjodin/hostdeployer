@@ -1,295 +1,339 @@
 <?php
-// boot.ipxe.php - Dynamic iPXE script generator
+/**
+ * boot.ipxe.php - dynamic iPXE script generator.
+ *
+ * Called by ipxe/boot.ipxe with ?mac=<client mac>. Emits a complete iPXE
+ * script that loads the ESXi mboot kernel plus every module listed in the
+ * version's boot.cfg, and points the installer at /ks.cfg.
+ */
 
-// Configure error handling
-ini_set('display_errors', 0);
-ini_set('log_errors', 1);
-ini_set('error_log', '/srv/autodeploy/logs/ipxe_errors.log');
+require_once __DIR__ . '/../lib/utils.php';
 
-// Set correct content type for iPXE script
-header('Content-Type: text/plain');
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', AUTODEPLOY_LOG_DIR . '/php_errors.log');
 
-// Function to log messages
-function logMessage($message, $level = 'DEBUG') {
-    $logFile = '/srv/autodeploy/logs/ipxe_boot.log';
-    $timestamp = date('Y-m-d H:i:s');
-    $logMessage = "[$timestamp] [$level] $message\n";
-    file_put_contents($logFile, $logMessage, FILE_APPEND);
+header('Content-Type: text/plain; charset=utf-8');
+// iPXE re-fetches this script on every retry; it must never be cached.
+header('Cache-Control: no-store, no-cache, must-revalidate');
+header('Pragma: no-cache');
+
+const IPXE_LOG = AUTODEPLOY_LOG_DIR . '/ipxe_boot.log';
+
+/**
+ * Log to the iPXE boot log.
+ *
+ * @param string $message Message
+ * @param string $level   Level
+ */
+function ipxeLog($message, $level = 'INFO') {
+    logMessage($message, $level, IPXE_LOG);
 }
 
-// Function to format MAC address consistently
-function formatMac($mac) {
-    return implode(':', str_split(strtolower(preg_replace('/[^0-9a-f]/i', '', $mac)), 2));
-}
-
-// Get MAC address from iPXE
-$mac = isset($_GET['mac']) ? formatMac($_GET['mac']) : '';
-$clientIP = $_SERVER['REMOTE_ADDR'];
-
-if (empty($mac)) {
-    logMessage("No MAC address provided in request from $clientIP", 'ERROR');
-    echo "#!ipxe\necho ERROR: No MAC address provided\nsleep 5\nexit\n";
-    exit;
-}
-
-logMessage("iPXE boot request from MAC: $mac, IP: $clientIP");
-
-// Load configurations
-$globalConfigPath = '/srv/autodeploy/config/global_config.json';
-$hostsConfigPath = '/srv/autodeploy/config/hosts.json';
-
-if (!file_exists($globalConfigPath) || !file_exists($hostsConfigPath)) {
-    logMessage("Configuration files missing", 'ERROR');
-    echo "#!ipxe\necho ERROR: Server configuration missing\nsleep 5\nexit\n";
-    exit;
-}
-
-$globalConfig = json_decode(file_get_contents($globalConfigPath), true);
-$hostsConfig = json_decode(file_get_contents($hostsConfigPath), true);
-
-if (!$globalConfig || !$hostsConfig) {
-    logMessage("Failed to parse configuration files", 'ERROR');
-    echo "#!ipxe\necho ERROR: Server configuration error\nsleep 5\nexit\n";
-    exit;
-}
-
-// Get default ESXi version
-$defaultVersion = $globalConfig['deployment']['default_version'] ?? '8U3';
-$esxiVersion = $defaultVersion;
-$hostFound = false;
-$hostname = '';
-$deploymentStatus = 'unknown';
-
-// Look up version for this MAC
-foreach ($hostsConfig['hosts'] as $host) {
-    if (formatMac($host['mac_address']) === $mac) {
-        $hostFound = true;
-        $esxiVersion = $host['esxi_version'] ?? $defaultVersion;
-        $hostname = $host['hostname'] ?? 'unknown';
-        $deploymentStatus = $host['deployment_status'] ?? 'unknown';
-        break;
+/**
+ * Emit an iPXE script that shows a message and falls through to local boot.
+ *
+ * @param string[] $lines  Messages to display on the console
+ * @param int      $sleep  Seconds to pause before exiting
+ */
+function ipxeFail(array $lines, $sleep = 10) {
+    echo "#!ipxe\n";
+    foreach ($lines as $line) {
+        echo 'echo ' . sanitizeIpxeText($line) . "\n";
     }
+    echo "sleep $sleep\n";
+    // Non-zero exit tells iPXE to continue with the next boot device.
+    echo "exit 1\n";
+    exit;
 }
 
-// Check if auto-registration is enabled
-$autoRegistrationEnabled = isset($globalConfig['deployment']['auto_registration']['enabled']) && 
-                           $globalConfig['deployment']['auto_registration']['enabled'];
+/**
+ * Strip characters that would break out of an iPXE echo line.
+ *
+ * @param string $text Text to sanitise
+ * @return string Safe single-line text
+ */
+function sanitizeIpxeText($text) {
+    return preg_replace('/[^\x20-\x7E]/', '', str_replace(["\r", "\n"], ' ', (string)$text));
+}
 
-// Handle unknown hosts with auto-registration if enabled
-if (!$hostFound && $autoRegistrationEnabled) {
-    logMessage("Unknown host with MAC: $mac - auto-registering", 'INFO');
-    
-    // Create a new entry for the unknown host
-    $defaultStatus = $globalConfig['deployment']['auto_registration']['default_status'] ?? 'pending';
+// ---------------------------------------------------------------------------
+// Identify the client
+// ---------------------------------------------------------------------------
+
+$clientIP = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+$mac = formatMac($_GET['mac'] ?? '');
+
+if ($mac === '') {
+    ipxeLog("Missing or malformed MAC address in request from $clientIP", 'ERROR');
+    ipxeFail(['ERROR: no valid MAC address supplied'], 5);
+}
+
+ipxeLog("iPXE boot request from MAC: $mac, IP: $clientIP");
+
+// ---------------------------------------------------------------------------
+// Load configuration
+// ---------------------------------------------------------------------------
+
+$globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+$hostsConfig  = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
+
+if ($globalConfig === null || $hostsConfig === null) {
+    ipxeLog('Failed to load server configuration', 'ERROR');
+    ipxeFail(['ERROR: deployment server configuration is unavailable'], 5);
+}
+
+$defaultVersion = $globalConfig['deployment']['default_version'] ?? '';
+$autoRegistration = $globalConfig['deployment']['auto_registration'] ?? [];
+$autoRegistrationEnabled = !empty($autoRegistration['enabled']);
+
+$host = findHostByMac($mac, $hostsConfig);
+
+// ---------------------------------------------------------------------------
+// Auto-registration of unknown hosts
+// ---------------------------------------------------------------------------
+
+if ($host === null && $autoRegistrationEnabled) {
+    ipxeLog("Unknown host with MAC: $mac - auto-registering");
+
+    $defaultStatus = ($autoRegistration['default_status'] ?? 'pending') === 'approved' ? 'approved' : 'pending';
+    $now = date('Y-m-d H:i:s');
+
     $newHost = [
-        'mac_address' => $mac,
-        'hostname' => 'esxi-' . substr(str_replace(':', '', $mac), -6), // Generate a default hostname
-        'esxi_version' => $defaultVersion,
-        'serial_number' => '',
-        'ilo_ip' => '',
-        'management_ip' => '',
+        'mac_address'        => $mac,
+        'hostname'           => 'esxi-' . substr(str_replace(':', '', $mac), -6),
+        'esxi_version'       => $defaultVersion,
+        'serial_number'      => '',
+        'ilo_ip'             => '',
+        'management_ip'      => '',
         'management_netmask' => '',
         'management_gateway' => '',
-        'fqdn' => '',
-        'vlans' => [
-            'management' => 0,
-            'vmotion' => 0,
-            'storage' => 0
-        ],
-        'datastore' => [
-            'name' => 'datastore1',
-            'drives' => []
-        ],
+        'fqdn'               => '',
+        'vlans'              => ['management' => 0, 'vmotion' => 0, 'storage' => 0],
+        'datastore'          => ['name' => 'datastore1', 'drives' => []],
+        'deployment_type'    => $globalConfig['deployment']['default_deployment_type'] ?? 'standard',
         'secure_boot_status' => 'unknown',
-        'deployment_status' => $defaultStatus,
-        'registered_time' => date('Y-m-d H:i:s'),
-        'last_seen' => date('Y-m-d H:i:s')
+        'deployment_status'  => $defaultStatus,
+        'registered_time'    => $now,
+        'last_seen'          => $now,
     ];
-    
-    // Add the new host to the configuration
-    $hostsConfig['hosts'][] = $newHost;
-    
-    // Save the updated configuration
-    $result = file_put_contents($hostsConfigPath, json_encode($hostsConfig, JSON_PRETTY_PRINT));
-    
-    if ($result === false) {
-        logMessage("Failed to save updated host configuration after auto-registration", 'ERROR');
-    } else {
-        logMessage("Successfully auto-registered host with MAC: $mac", 'INFO');
-        
-        // Send email notification if configured
-        if (!empty($globalConfig['deployment']['auto_registration']['notification_email'])) {
-            $to = $globalConfig['deployment']['auto_registration']['notification_email'];
-            $subject = "New server auto-registered: $mac";
-            $message = "A new server with MAC address $mac has been auto-registered.\n\n";
-            $message .= "Default hostname: {$newHost['hostname']}\n";
-            $message .= "Registration time: {$newHost['registered_time']}\n";
-            $message .= "IP address: $clientIP\n\n";
-            $message .= "Please review and approve this server in the admin dashboard.";
-            
-            mail($to, $subject, $message);
-            logMessage("Sent auto-registration notification email", 'INFO');
+
+    // Register under a lock and re-check inside it: two NICs of the same
+    // server can hit this endpoint simultaneously and previously produced
+    // duplicate entries (or lost one of the writes entirely).
+    $registered = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use ($mac, $newHost) {
+        foreach ($config['hosts'] as $existing) {
+            if (hostMatchesMac($existing, $mac)) {
+                return false; // Already registered by a concurrent request.
+            }
         }
-        
-        // Set variables for the wait loop
-        $hostFound = true;
-        $deploymentStatus = $defaultStatus;
-        $hostname = $newHost['hostname'];
+        $config['hosts'][] = $newHost;
+        return true;
+    });
+
+    if ($registered) {
+        ipxeLog("Successfully auto-registered host with MAC: $mac");
+
+        $notifyTo = $autoRegistration['notification_email'] ?? '';
+        if ($notifyTo !== '' && filter_var($notifyTo, FILTER_VALIDATE_EMAIL)) {
+            $subject = 'New server auto-registered: ' . $mac;
+            $body = "A new server with MAC address $mac has been auto-registered.\n\n"
+                . "Default hostname: {$newHost['hostname']}\n"
+                . "Registration time: {$newHost['registered_time']}\n"
+                . "IP address: $clientIP\n\n"
+                . 'Please review and approve this server in the admin dashboard.';
+
+            if (!@mail($notifyTo, $subject, $body)) {
+                ipxeLog('Failed to send auto-registration notification email', 'WARNING');
+            }
+        }
     }
+
+    // Re-read so we act on the record that actually landed on disk.
+    $hostsConfig = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG) ?? $hostsConfig;
+    $host = findHostByMac($mac, $hostsConfig);
 }
 
-// Check if this host is approved for deployment
-if (!$hostFound) {
-    logMessage("Unknown host with MAC: $mac - auto-registration disabled", 'WARNING');
-    
-    // Get number of retries from query string or set default
-    $retries = isset($_GET['retry']) ? (int)$_GET['retry'] : 0;
-    $maxRetries = 5; // Maximum number of retry attempts
-    $retryDelay = 30; // Seconds to wait between retries
-    
-    echo "#!ipxe\n";
-    echo "echo Unknown server with MAC $mac\n";
-    echo "echo This server is not registered in the deployment system\n";
-    
-    if ($retries < $maxRetries) {
-        $nextRetry = $retries + 1;
-        echo "echo Retry attempt $nextRetry of $maxRetries...\n";
-        echo "echo Waiting $retryDelay seconds before retry...\n";
-        echo "sleep $retryDelay\n";
-        echo "chain http://${_SERVER['HTTP_HOST']}/boot.ipxe.php?mac=$mac&retry=$nextRetry\n";
-    } else {
-        echo "echo Maximum retries reached ($maxRetries attempts)\n";
-        echo "echo Booting to local disk if available\n";
-        echo "sleep 5\n";
-        echo "exit\n";
-    }
-    exit;
-} elseif ($deploymentStatus !== 'approved') {
-    logMessage("Host $hostname ($mac) is not approved for deployment: $deploymentStatus", 'WARNING');
-    
-    // Get number of retries from query string or set default
-    $retries = isset($_GET['retry']) ? (int)$_GET['retry'] : 0;
-    
-    // Get wait parameters from configuration
-    $maxRetries = isset($globalConfig['deployment']['auto_registration']['max_wait_time']) ? 
-                 intval($globalConfig['deployment']['auto_registration']['max_wait_time'] / 
-                       $globalConfig['deployment']['auto_registration']['retry_interval']) : 20;
-    $retryDelay = $globalConfig['deployment']['auto_registration']['retry_interval'] ?? 60;
-    
-    echo "#!ipxe\n";
-    echo "echo Server $hostname with MAC $mac is not approved for deployment\n";
-    echo "echo Current status: $deploymentStatus\n";
-    
-    if ($retries < $maxRetries) {
-        $nextRetry = $retries + 1;
-        $remainingTime = ($maxRetries - $retries) * $retryDelay;
-        $remainingMinutes = floor($remainingTime / 60);
-        $remainingSeconds = $remainingTime % 60;
-        
-        echo "echo Waiting for approval...\n";
-        echo "echo Retry attempt $nextRetry of $maxRetries\n";
-        echo "echo Will continue checking for ~$remainingMinutes minutes\n";
-        echo "echo Waiting $retryDelay seconds before next check...\n";
-        echo "sleep $retryDelay\n";
-        echo "chain http://${_SERVER['HTTP_HOST']}/boot.ipxe.php?mac=$mac&retry=$nextRetry\n";
-    } else {
-        echo "echo Maximum wait time reached after $maxRetries attempts\n";
-        echo "echo Please contact system administrator\n";
-        echo "echo Booting to local disk for now\n";
-        echo "sleep 5\n";
-        echo "exit\n";
-    }
-    exit;
-}
+// ---------------------------------------------------------------------------
+// Approval gate
+// ---------------------------------------------------------------------------
 
-// Verify ESXi version exists
-$esxiPath = "/srv/autodeploy/esxi/$esxiVersion";
-if (!is_dir($esxiPath)) {
-    logMessage("ESXi version $esxiVersion not found at $esxiPath", 'ERROR');
+$retries = max(0, (int)($_GET['retry'] ?? 0));
+$retryDelay = max(10, (int)($autoRegistration['retry_interval'] ?? 60));
+$maxWaitTime = max($retryDelay, (int)($autoRegistration['max_wait_time'] ?? 7200));
+$maxRetries = (int)floor($maxWaitTime / $retryDelay);
+
+/**
+ * Emit a "wait and retry" iPXE script, or give up once the budget is spent.
+ *
+ * @param string[] $lines      Console messages
+ * @param int      $retries    Retries used so far
+ * @param int      $maxRetries Retry budget
+ * @param int      $delay      Seconds between retries
+ * @param string   $mac        Client MAC
+ */
+function ipxeRetryOrGiveUp(array $lines, $retries, $maxRetries, $delay, $mac) {
+    if ($retries >= $maxRetries) {
+        $lines[] = "Maximum wait time reached after $maxRetries attempts";
+        $lines[] = 'Please contact your system administrator';
+        $lines[] = 'Booting from local disk';
+        ipxeFail($lines, 5);
+    }
+
+    $next = $retries + 1;
+    $remainingMinutes = (int)floor((($maxRetries - $retries) * $delay) / 60);
+
+    // Build the retry URL from the request the client actually made, so the
+    // loop survives being reached via a hostname or an alternate address.
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $hostHeader = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? 'localhost');
+    $hostHeader = preg_replace('/[^A-Za-z0-9\.\-:\[\]]/', '', $hostHeader);
+    // $mac is already normalised to [0-9a-f:] by formatMac(), so it needs no
+    // escaping; percent-encoding the colons only confuses the iPXE parser.
+    $retryUrl = sprintf('%s://%s/boot.ipxe.php?mac=%s&retry=%d', $scheme, $hostHeader, $mac, $next);
+
     echo "#!ipxe\n";
-    echo "echo ERROR: ESXi version $esxiVersion not found\n";
-    echo "echo Please contact system administrator\n";
-    echo "sleep 5\n";
-    echo "exit\n";
+    foreach ($lines as $line) {
+        echo 'echo ' . sanitizeIpxeText($line) . "\n";
+    }
+    echo 'echo Retry attempt ' . $next . ' of ' . $maxRetries . "\n";
+    echo 'echo Will keep checking for approximately ' . $remainingMinutes . " minutes\n";
+    echo 'sleep ' . $delay . "\n";
+    echo 'chain ' . sanitizeIpxeText($retryUrl) . "\n";
     exit;
 }
 
-// Load ESXi boot.cfg to get modules
-$bootCfgPath = "$esxiPath/boot.cfg";
-if (!file_exists($bootCfgPath)) {
-    logMessage("boot.cfg not found for ESXi $esxiVersion", 'ERROR');
-    echo "#!ipxe\n";
-    echo "echo ERROR: ESXi $esxiVersion boot configuration not found\n";
-    echo "sleep 5\n";
-    echo "exit\n";
-    exit;
+if ($host === null) {
+    ipxeLog("Unknown host with MAC: $mac - auto-registration disabled", 'WARNING');
+    ipxeRetryOrGiveUp([
+        "Unknown server with MAC $mac",
+        'This server is not registered in the deployment system',
+    ], $retries, min($maxRetries, 5), $retryDelay, $mac);
+}
+
+$hostname = $host['hostname'] ?? 'unknown';
+$deploymentStatus = $host['deployment_status'] ?? 'unknown';
+
+if ($deploymentStatus === 'deployed') {
+    // Installation already finished; do not reinstall on every reboot.
+    ipxeLog("Host $hostname ($mac) is already deployed - booting from local disk");
+    ipxeFail([
+        "Server $hostname is already deployed",
+        'Booting from local disk',
+    ], 3);
+}
+
+if ($deploymentStatus !== 'approved' && $deploymentStatus !== 'deploying') {
+    ipxeLog("Host $hostname ($mac) is not approved for deployment: $deploymentStatus", 'WARNING');
+    ipxeRetryOrGiveUp([
+        "Server $hostname with MAC $mac is awaiting approval",
+        "Current status: $deploymentStatus",
+    ], $retries, $maxRetries, $retryDelay, $mac);
+}
+
+// ---------------------------------------------------------------------------
+// Resolve the ESXi image
+// ---------------------------------------------------------------------------
+
+$esxiVersion = (string)($host['esxi_version'] ?? $defaultVersion);
+
+// The version name becomes part of a filesystem path and a URL.
+if ($esxiVersion === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $esxiVersion)) {
+    ipxeLog("Invalid ESXi version '$esxiVersion' for $mac", 'ERROR');
+    ipxeFail(['ERROR: invalid ESXi version configured for this host'], 5);
+}
+
+$esxiPath = AUTODEPLOY_ROOT . '/esxi/' . $esxiVersion;
+$bootCfgPath = $esxiPath . '/boot.cfg';
+
+if (!is_dir($esxiPath) || !is_file($bootCfgPath)) {
+    ipxeLog("ESXi version $esxiVersion not installed at $esxiPath", 'ERROR');
+    ipxeFail([
+        "ERROR: ESXi version $esxiVersion is not available on the deployment server",
+        'Please contact your system administrator',
+    ], 5);
 }
 
 $bootCfg = file_get_contents($bootCfgPath);
-$modules = [];
+if ($bootCfg === false) {
+    ipxeLog("Failed to read $bootCfgPath", 'ERROR');
+    ipxeFail(['ERROR: could not read the ESXi boot configuration'], 5);
+}
+
 $kernel = '';
 $kernelopt = '';
+$modules = [];
 
-// Parse boot.cfg
-foreach (explode("\n", $bootCfg) as $line) {
-    if (strpos($line, 'modules=') === 0) {
-        $modulesList = substr($line, 8);
-        $modules = explode(' --- ', $modulesList);
-    } elseif (strpos($line, 'kernel=') === 0) {
-        $kernel = substr($line, 7);
-    } elseif (strpos($line, 'kernelopt=') === 0) {
-        $kernelopt = substr($line, 10);
+foreach (preg_split('/\r\n|\r|\n/', $bootCfg) as $line) {
+    $line = trim($line);
+    if ($line === '' || $line[0] === '#') {
+        continue;
+    }
+    $eq = strpos($line, '=');
+    if ($eq === false) {
+        continue;
+    }
+
+    $key = rtrim(substr($line, 0, $eq));
+    $value = ltrim(substr($line, $eq + 1));
+
+    switch ($key) {
+        case 'kernel':
+            $kernel = $value;
+            break;
+        // VMware ships "kernelopt"; accept "kernelopts" too since hand-edited
+        // boot.cfg files in this repo have used both spellings.
+        case 'kernelopt':
+        case 'kernelopts':
+            $kernelopt = $value;
+            break;
+        case 'modules':
+            $modules = array_filter(array_map('trim', explode('---', $value)), 'strlen');
+            break;
     }
 }
 
-if (empty($kernel) || empty($modules)) {
-    logMessage("Invalid boot.cfg for ESXi $esxiVersion", 'ERROR');
-    echo "#!ipxe\n";
-    echo "echo ERROR: Invalid boot configuration for ESXi $esxiVersion\n";
-    echo "sleep 5\n";
-    echo "exit\n";
-    exit;
+if ($kernel === '' || $modules === []) {
+    ipxeLog("Invalid boot.cfg for ESXi $esxiVersion (kernel or modules missing)", 'ERROR');
+    ipxeFail(["ERROR: invalid boot configuration for ESXi $esxiVersion"], 5);
 }
 
-// Clean up paths - remove leading slashes to build correct URLs
-$kernel = ltrim($kernel, '/');
-foreach ($modules as &$module) {
-    $module = ltrim($module, '/');
+// Strip any "ks=" the packaged boot.cfg carries; we append our own below.
+$kernelopt = trim(preg_replace('/\bks=\S+/', '', $kernelopt));
+
+// ---------------------------------------------------------------------------
+// Mark the host as deploying and emit the boot script
+// ---------------------------------------------------------------------------
+
+$baseUrl = rtrim((string)($globalConfig['webserver']['url'] ?? ''), '/');
+if ($baseUrl === '') {
+    $webServerIp = $globalConfig['webserver']['ip'] ?? '';
+    $baseUrl = 'http://' . $webServerIp;
+}
+// The version was validated against [A-Za-z0-9._-] above.
+$imageUrl = $baseUrl . '/esxi/' . $esxiVersion;
+$ksUrl = $baseUrl . '/ks.cfg?mac=' . $mac;
+
+if ($deploymentStatus === 'approved') {
+    updateHostByMac($mac, [
+        'deployment_status'  => 'deploying',
+        'deployment_started' => date('Y-m-d H:i:s'),
+    ]);
 }
 
-// Generate iPXE script
-$webServerIP = $globalConfig['webserver']['ip'];
-$baseUrl = "http://$webServerIP/esxi/$esxiVersion";
-$ksUrl = "http://$webServerIP/ks.cfg?mac=$mac";
-
-// Mark host as deploying
-foreach ($hostsConfig['hosts'] as &$host) {
-    if (formatMac($host['mac_address']) === $mac) {
-        $host['deployment_status'] = 'deploying';
-        $host['deployment_started'] = date('Y-m-d H:i:s');
-        break;
-    }
-}
-file_put_contents($hostsConfigPath, json_encode($hostsConfig, JSON_PRETTY_PRINT));
-
-// Start iPXE script
-// Instead of trying to boot ESXi directly
 echo "#!ipxe\n\n";
-echo "echo Chainloading to ESXi installer for $hostname ($mac)\n";
-echo "chain http://$webServerIP/ipxe/esxi.ipxe\n";
+echo 'echo Booting ESXi ' . sanitizeIpxeText($esxiVersion) . ' installer for '
+    . sanitizeIpxeText($hostname) . ' (' . $mac . ")\n\n";
 
-// Set kernel command with proper parameters
-// Combine original kernel options with our kickstart parameter
-$kernelParams = "$kernelopt ks=$ksUrl";
-echo "kernel $baseUrl/$kernel $kernelParams\n";
+// mboot.efi is the ESXi bootloader that iPXE hands control to; the kernel
+// entry from boot.cfg is loaded as the first module, exactly as ESXi's own
+// boot.cfg describes it.
+echo 'kernel ' . $imageUrl . '/' . ltrim($kernel, '/') . ' ' . $kernelopt . ' ks=' . $ksUrl . "\n";
 
-// Add all modules
 foreach ($modules as $module) {
-    echo "module $baseUrl/$module\n";
+    echo 'module ' . $imageUrl . '/' . ltrim($module, '/') . "\n";
 }
 
-// Boot command
 echo "\nboot\n";
 
-// Log successful script generation
-logMessage("Generated iPXE boot script for $hostname ($mac) using ESXi $esxiVersion");
+ipxeLog("Generated iPXE boot script for $hostname ($mac) using ESXi $esxiVersion");

@@ -1,131 +1,127 @@
 <?php
 /**
- * Enhanced log file viewer script
- * Retrieves the content of log files for display in the admin interface
+ * Log file viewer endpoint.
+ *
+ * Returns the tail of a log file as plain text for the admin dashboard.
  */
 
-// Start session to check for existing authentication
-session_start();
+require_once __DIR__ . '/../lib/auth.php';
 
-// Basic security - restrict access to this script
-if (!isset($_SERVER['HTTP_REFERER']) || 
-    !str_contains($_SERVER['HTTP_REFERER'], $_SERVER['HTTP_HOST'])) {
-    header('HTTP/1.0 403 Forbidden');
-    die('Access denied');
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', AUTODEPLOY_LOG_DIR . '/php_errors.log');
+
+// The old code gated access on the Referer header, which any client can set,
+// and only then checked the session. Authentication is the actual control.
+$user = currentUser();
+if ($user === null) {
+    http_response_code(401);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Authentication required. Please log in to the admin dashboard first.');
 }
 
-// Check for session-based authentication
-if (!isset($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {
-    header('HTTP/1.0 401 Unauthorized');
-    die('Authentication required. Please log in to the admin dashboard first.');
+header('Content-Type: text/plain; charset=utf-8');
+header('X-Content-Type-Options: nosniff');
+header('Cache-Control: no-store');
+
+// ---------------------------------------------------------------------------
+// Resolve the requested log file
+// ---------------------------------------------------------------------------
+
+$file = (string)($_GET['file'] ?? '');
+
+// Plain file name only: no directories, no traversal, must end in .log.
+if ($file !== basename($file) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.log$/', $file)) {
+    http_response_code(400);
+    exit('Invalid log file name');
 }
 
-// Validate the requested log file
-$file = $_GET['file'] ?? '';
-if (empty($file) || !preg_match('/^[a-zA-Z0-9_\.-]+\.log$/', $file)) {
-    header('HTTP/1.0 400 Bad Request');
-    die('Invalid log file name');
+$globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+$logsDir = $globalConfig['paths']['logs_dir'] ?? AUTODEPLOY_LOG_DIR;
+
+$logPath = safePathJoin($logsDir, $file, true);
+
+if ($logPath === null || !is_file($logPath) || !is_readable($logPath)) {
+    http_response_code(404);
+    exit('Log file not found or not readable');
 }
 
-// Load global config to get logs directory
-$globalConfigPath = '/srv/autodeploy/config/global_config.json';
-$globalConfig = null;
-
-if (file_exists($globalConfigPath)) {
-    $globalConfig = json_decode(file_get_contents($globalConfigPath), true);
-}
-
-$logsDir = $globalConfig['paths']['logs_dir'] ?? '/srv/autodeploy/logs';
-$logPath = $logsDir . '/' . $file;
-
-// Check if the log file exists and is readable
-if (!file_exists($logPath) || !is_readable($logPath)) {
-    header('HTTP/1.0 404 Not Found');
-    die('Log file not found or not readable');
-}
-
-// Default max lines - can be set in query parameters
-$maxLines = isset($_GET['lines']) ? (int)$_GET['lines'] : 100;
-$maxLines = min(max($maxLines, 10), 1000); // Limit between 10 and 1000 lines
-
-// Filter options
-$filter = $_GET['filter'] ?? '';
-$level = $_GET['level'] ?? ''; // INFO, WARNING, ERROR or empty for all
-
-// Get file size for information
 $fileSize = filesize($logPath);
 
-// Convert size to human-readable format
-function formatSize($bytes) {
-    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    $i = 0;
-    while ($bytes >= 1024 && $i < count($units) - 1) {
-        $bytes /= 1024;
-        $i++;
-    }
-    return round($bytes, 2) . ' ' . $units[$i];
-}
+// ---------------------------------------------------------------------------
+// Raw download
+// ---------------------------------------------------------------------------
 
-// Handle the raw file download option
 if (isset($_GET['download'])) {
-    header('Content-Type: text/plain');
-    header('Content-Disposition: attachment; filename="' . basename($logPath) . '"');
+    header('Content-Disposition: attachment; filename="' . $file . '"');
     header('Content-Length: ' . $fileSize);
     readfile($logPath);
     exit;
 }
 
-// Get the most recent entries (based on lines or max size)
-$maxSize = 200 * 1024; // 200KB for web display
-$contents = '';
+// ---------------------------------------------------------------------------
+// Tail, filter and return
+// ---------------------------------------------------------------------------
+
+$maxLines = (int)($_GET['lines'] ?? 100);
+$maxLines = min(max($maxLines, 10), 1000);
+
+$filter = (string)($_GET['filter'] ?? '');
+$level = strtoupper((string)($_GET['level'] ?? ''));
+if (!in_array($level, ['', 'INFO', 'WARNING', 'ERROR', 'DEBUG'], true)) {
+    $level = '';
+}
+
+/**
+ * @param int $bytes Size in bytes
+ * @return string Human-readable size
+ */
+function formatSize($bytes) {
+    return getReadableFileSize($bytes);
+}
+
+// Read at most the last 200 KB so a multi-megabyte log cannot exhaust memory.
+$maxSize = 200 * 1024;
 
 if ($fileSize > $maxSize) {
-    // For large files, read only the last part
-    $handle = fopen($logPath, 'r');
+    $handle = fopen($logPath, 'rb');
+    if ($handle === false) {
+        http_response_code(500);
+        exit('Could not read the log file');
+    }
     fseek($handle, -$maxSize, SEEK_END);
-    $contents = fread($handle, $maxSize);
+    $contents = (string)fread($handle, $maxSize);
     fclose($handle);
-    
-    // Find the first complete line
+
+    // Drop the (probably partial) first line.
     $firstNewline = strpos($contents, "\n");
     if ($firstNewline !== false) {
         $contents = substr($contents, $firstNewline + 1);
     }
 } else {
-    // For small files, read the entire file
-    $contents = file_get_contents($logPath);
+    $contents = (string)file_get_contents($logPath);
 }
 
-// Split into lines
 $lines = explode("\n", $contents);
 
-// Apply filtering if requested
-if (!empty($filter) || !empty($level)) {
-    $filteredLines = [];
-    foreach ($lines as $line) {
-        $matchesFilter = empty($filter) || stripos($line, $filter) !== false;
-        $matchesLevel = empty($level) || stripos($line, "[$level]") !== false;
-        
-        if ($matchesFilter && $matchesLevel) {
-            $filteredLines[] = $line;
-        }
-    }
-    $lines = $filteredLines;
+if ($filter !== '' || $level !== '') {
+    $lines = array_values(array_filter($lines, static function ($line) use ($filter, $level) {
+        $matchesFilter = $filter === '' || stripos($line, $filter) !== false;
+        $matchesLevel = $level === '' || stripos($line, "[$level]") !== false;
+        return $matchesFilter && $matchesLevel;
+    }));
 }
 
-// Limit to the requested number of lines
 if (count($lines) > $maxLines) {
     $lines = array_slice($lines, -$maxLines);
 }
 
-// Combine the lines back together
-$contents = implode("\n", $lines);
+$header = '# File: ' . $file
+    . ' | Size: ' . formatSize($fileSize)
+    . ' | Last modified: ' . date('Y-m-d H:i:s', filemtime($logPath)) . "\n";
+$header .= '# Showing last ' . count($lines) . ' lines'
+    . ($filter !== '' ? " with filter: '$filter'" : '')
+    . ($level !== '' ? " at level: $level" : '') . "\n";
+$header .= '# ' . str_repeat('-', 88) . "\n";
 
-// Add file info at the top of the output
-$fileInfo = "# File: $file | Size: " . formatSize($fileSize) . " | Last modified: " . date("Y-m-d H:i:s", filemtime($logPath)) . "\n";
-$fileInfo .= "# Showing last " . count($lines) . " lines" . (!empty($filter) ? " with filter: '$filter'" : "") . (!empty($level) ? " at level: $level" : "") . "\n";
-$fileInfo .= "# ------------------------------------------------------------------------------------------\n";
-
-// Output the log content
-header('Content-Type: text/plain');
-echo $fileInfo . $contents;
+echo $header . implode("\n", $lines);

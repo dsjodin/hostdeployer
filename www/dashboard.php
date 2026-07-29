@@ -24,9 +24,10 @@ function getRecentLogEntries($globalConfig, $entryCount = 15) {
         'admin_dashboard.log',
         'kickstart_generator.log',
         'ipxe_boot.log',
-        'version_selector.log',
+        'deployment.log',
+        'auth.log',
         'ilo_scanner.log',
-        'secure_boot_manager.log'
+        'secure_boot_manager.log',
     ];
     
     $allEntries = [];
@@ -44,9 +45,12 @@ function getRecentLogEntries($globalConfig, $entryCount = 15) {
         $maxReadSize = 20 * 1024; // Read at most 20KB
         
         if ($fileSize > $maxReadSize) {
-            $handle = fopen($logPath, 'r');
+            $handle = fopen($logPath, 'rb');
+            if ($handle === false) {
+                continue;
+            }
             fseek($handle, -$maxReadSize, SEEK_END);
-            $logContent = fread($handle, $maxReadSize);
+            $logContent = (string)fread($handle, $maxReadSize);
             fclose($handle);
             
             // Find the first complete line
@@ -55,7 +59,7 @@ function getRecentLogEntries($globalConfig, $entryCount = 15) {
                 $logContent = substr($logContent, $firstNewline + 1);
             }
         } else {
-            $logContent = file_get_contents($logPath);
+            $logContent = (string)file_get_contents($logPath);
         }
         
         // Parse log entries
@@ -101,6 +105,12 @@ function getRecentLogEntries($globalConfig, $entryCount = 15) {
  * @param array $deployedHosts List of deployed hosts
  */
 function renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $deployingHosts, $deployedHosts) {
+    if (!is_array($globalConfig)) {
+        echo '<div class="alert alert-danger">The global configuration could not be loaded. '
+           . 'Check /srv/autodeploy/config/global_config.json and the php_errors log.</div>';
+        return;
+    }
+
     // Get recent log entries for the activity feed
     $recentLogs = getRecentLogEntries($globalConfig);
     ?>
@@ -121,16 +131,16 @@ function renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $d
                         <tbody>
                             <tr>
                                 <td><strong>Web Server:</strong></td>
-                                <td><?php echo htmlspecialchars($globalConfig['webserver']['url']); ?></td>
+                                <td><?php echo h($globalConfig['webserver']['url'] ?? ''); ?></td>
                             </tr>
                             <tr>
                                 <td><strong>DHCP Range:</strong></td>
-                                <td><?php echo htmlspecialchars($globalConfig['network']['dhcp_range_start']); ?> - <?php echo htmlspecialchars($globalConfig['network']['dhcp_range_end']); ?></td>
+                                <td><?php echo h($globalConfig['network']['dhcp_range_start'] ?? ''); ?> - <?php echo h($globalConfig['network']['dhcp_range_end'] ?? ''); ?></td>
                             </tr>
                             <tr>
                                 <td><strong>Secure Boot:</strong></td>
                                 <td>
-                                    <?php if($globalConfig['security']['secure_boot_enabled']): ?>
+                                    <?php if(!empty($globalConfig['security']['secure_boot_enabled'])): ?>
                                         <span class="badge bg-success">Enabled</span>
                                     <?php else: ?>
                                         <span class="badge bg-warning text-dark">Disabled</span>
@@ -216,7 +226,7 @@ function renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $d
                             <?php foreach ($recentLogs as $entry): ?>
                                 <?php
                                     // Format the log entry for display
-                                    $formattedEntry = htmlspecialchars($entry['text']);
+                                    $formattedEntry = h($entry['text']);
                                     
                                     // Highlight log levels
                                     $formattedEntry = preg_replace('/\[INFO\]/', '<span class="log-info">[INFO]</span>', $formattedEntry);
@@ -227,7 +237,7 @@ function renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $d
                                     $formattedEntry = preg_replace('/\[([\d-]+ [\d:]+)\]/', '[<span class="log-timestamp">$1</span>]', $formattedEntry);
                                     
                                     // Add source info
-                                    $sourceInfo = ' <small class="text-muted">(' . htmlspecialchars($entry['source']) . ')</small>';
+                                    $sourceInfo = ' <small class="text-muted">(' . h($entry['source']) . ')</small>';
                                 ?>
                                 <div><?php echo $formattedEntry . $sourceInfo; ?></div>
                             <?php endforeach; ?>

@@ -1,0 +1,18 @@
+# Live configuration: contains site-specific addresses and credentials.
+# Start from the matching *.example.* file.
+config/global_config.json
+config/hosts.json
+config/credentials.json
+config/auth_config.php
+config/*.lock
+
+# Runtime state
+logs/
+esxi/*/
+templates/backups/
+
+# Editor and OS noise
+*.bak
+*.php_bak
+*~
+.DS_Store

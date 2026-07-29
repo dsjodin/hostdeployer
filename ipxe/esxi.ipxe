@@ -1,13 +1,15 @@
 #!ipxe
-
-echo Booting ESXi Installer...
-
-# Use simple direct kernel loading
-set base-url http://10.1.40.151/esxi/8.0U3
-kernel http://10.1.40.151/esxi/8.0U3/efi/boot/bootx64.efi ks=http://10.1.40.151/admin/generate_kickstart.php?mac=${net0/mac}
-
-# Boot
-boot
-
-
-
+# Manual/emergency entry point.
+#
+# The normal chain is:
+#   DHCP -> ipxe.efi -> ipxe/boot.ipxe -> boot.ipxe.php -> ESXi installer
+#
+# boot.ipxe.php reads the selected version's boot.cfg and emits the full
+# kernel + module list, so nothing here needs to know a version or an
+# address. Use this file only to re-enter the chain from the iPXE shell:
+#
+#   chain http://${next-server}/ipxe/esxi.ipxe
+#
+# ${next-server} comes from DHCP (siaddr); it is never hardcoded.
+echo Re-entering the ESXi deployment chain via ${next-server}
+chain http://${next-server}/boot.ipxe.php?mac=${net0/mac}&serial=${smbios/serial}
