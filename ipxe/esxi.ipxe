@@ -1,0 +1,13 @@
+#!ipxe
+
+echo Booting ESXi Installer...
+
+# Use simple direct kernel loading
+set base-url http://10.1.40.151/esxi/8.0U3
+kernel http://10.1.40.151/esxi/8.0U3/efi/boot/bootx64.efi ks=http://10.1.40.151/admin/generate_kickstart.php?mac=${net0/mac}
+
+# Boot
+boot
+
+
+

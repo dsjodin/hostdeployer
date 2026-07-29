@@ -1,0 +1,92 @@
+{
+    "hosts": [
+        {
+            "mac_address": "00:50:56:a4:8a:f0",
+            "hostname": "esx",
+            "esxi_version": "8.0U3",
+            "fqdn": "esx.lab.io",
+            "serial_number": null,
+            "ilo_ip": null,
+            "management_ip": "10.1.40.49",
+            "management_netmask": "255.255.255.0",
+            "management_gateway": "10.1.40.1",
+            "vlans": {
+                "management": 0,
+                "vmotion": 0,
+                "storage": 0
+            },
+            "vmotion_ip": "",
+            "vmotion_netmask": "255.255.255.0",
+            "datastore": {
+                "name": "datastore1",
+                "drives": []
+            },
+            "deployment_type": "standard",
+            "secure_boot_status": "unknown",
+            "deployment_status": "deploying",
+            "last_updated": "2025-04-15 16:48:17",
+            "deployment_started": "2025-04-15 16:50:33",
+            "last_seen": "2025-04-15 16:53:30"
+        },
+        {
+            "ilo_ip": "10.129.19.97",
+            "serial_number": "CZ2D1Y0F8D",
+            "mac_address": "88:e9:a4:d6:59:2a",
+            "additional_macs": [
+                "88:e9:a4:d6:59:2b"
+            ],
+            "model": "ProLiant DL380 Gen11",
+            "manufacturer": "HPE",
+            "bios_version": "U54 v2.22 (06\/19\/2024)",
+            "secure_boot_status": "Unknown",
+            "hostname": "esxi-d6592a",
+            "fqdn": "esxi-d6592a.local",
+            "management_ip": "10.10.1.1",
+            "management_netmask": "255.255.255.0",
+            "management_gateway": "10.10.1.1",
+            "vlan_id": 0,
+            "datastore": {
+                "name": "datastore1",
+                "drives": []
+            },
+            "vlans": {
+                "management": 0,
+                "vmotion": 0,
+                "storage": 0
+            },
+            "deployment_status": "approved",
+            "deployment_time": null,
+            "deployment_type": "vcf",
+            "approved_time": "2025-04-16 14:24:36"
+        },
+        {
+            "ilo_ip": "10.129.19.98",
+            "serial_number": "CZ2D1Y0F8B",
+            "mac_address": "88:e9:a4:d6:49:ee",
+            "additional_macs": [
+                "88:e9:a4:d6:49:ef"
+            ],
+            "model": "ProLiant DL380 Gen11",
+            "manufacturer": "HPE",
+            "bios_version": "U54 v2.22 (06\/19\/2024)",
+            "secure_boot_status": "Unknown",
+            "hostname": "",
+            "fqdn": "",
+            "management_ip": "",
+            "management_netmask": "",
+            "management_gateway": "",
+            "vlan_id": 0,
+            "datastore": {
+                "name": "datastore1",
+                "drives": []
+            },
+            "vlans": {
+                "management": 0,
+                "vmotion": 0,
+                "storage": 0
+            },
+            "deployment_status": "pending",
+            "deployment_time": null
+        }
+    ]
+}

@@ -1,0 +1,61 @@
+{
+    "deployment": {
+        "esxi_versions": {
+            "8.0U3": {
+                "path": "\/srv\/autodeploy\/esxi\/8.0U3",
+                "description": "ESXi 8.0 Update 3",
+                "bootloader_url": "http:\/\/10.1.40.151\/esxi\/8.0U3\/efi\/boot\/bootx64.efi"
+            },
+            "7.0": {
+                "path": "\/srv\/autodeploy\/esxi\/7.0",
+                "description": "ESXi 7.0 Update 3",
+                "bootloader_url": "http:\/\/10.1.40.151\/esxi\/7.0\/efi\/boot\/bootx64.efi"
+            }
+        },
+        "kickstart_templates": {
+            "standard": "\/srv\/autodeploy\/templates\/kickstart_template_std.cfg",
+            "vcf": "\/srv\/autodeploy\/templates\/kickstart_template_vcf.cfg"
+        },
+        "default_version": "8.0U3",
+        "default_deployment_type": "vcf",
+        "auto_registration": {
+            "enabled": true,
+            "default_status": "pending",
+            "max_wait_time": 7200,
+            "retry_interval": 60,
+            "notification_email": "admin@example.com"
+        },
+        "esxi_root_password": "VMware1!",
+        "waiting_template_path": "\/srv\/autodeploy\/templates\/kickstart_template_vcf.cfg"
+    },
+    "network": {
+        "dhcp_range_start": "10.1.40.220",
+        "dhcp_range_end": "10.1.40.230",
+        "subnet_mask": "255.255.255.0",
+        "gateway": "10.1.40.1",
+        "dns_servers": [
+            "10.10.10.1"
+        ],
+        "ntp_servers": [
+            "10.10.10.2"
+        ]
+    },
+    "ilo": {
+        "admin_user": "Administrator",
+        "admin_password": "password",
+        "scan_range_start": "192.168.2.1",
+        "scan_range_end": "192.168.2.254"
+    },
+    "webserver": {
+        "ip": "10.1.40.151",
+        "port": 80,
+        "url": "http:\/\/10.1.40.151"
+    },
+    "security": {
+        "secure_boot_enabled": false
+    },
+    "paths": {
+        "hosts_config": "\/srv\/autodeploy\/config\/hosts.json",
+        "logs_dir": "\/srv\/autodeploy\/logs"
+    }
+}

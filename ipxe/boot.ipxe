@@ -1,0 +1,22 @@
+#!ipxe
+echo iPXE boot starting for ESXi auto-deployment...
+echo Getting dynamic boot configuration...
+
+echo SMBIOS Data:
+echo BIOS Vendor:        ${smbios/vendor}
+echo System Manufacturer:${smbios/manufacturer}
+echo System Product:     ${smbios/product}
+echo System Version:     ${smbios/version}
+echo System Serial:      ${smbios/serial}
+echo Baseboard Maker:    ${smbios/manufacturer}
+echo Baseboard Product:  ${smbios/product}
+
+#set net0/mac ${net0/mac:hexhyp}
+
+# Chain to the dynamic script with our MAC address
+echo chain loading...
+chain http://${dhcp-server}/boot.ipxe.php?mac=${net0/mac}
+
+# If chaining fails, try to boot from local disk
+echo Chain load failed, booting from local disk...
+exit

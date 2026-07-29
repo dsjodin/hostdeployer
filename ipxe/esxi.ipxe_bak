@@ -1,0 +1,22 @@
+#!ipxe
+
+echo Booting ESXi Installer...
+
+# Use simple direct kernel loading
+set base-url http://10.1.40.151/esxi/8.0U3
+kernel ${base-url}/b.b00 ks=http://10.1.40.151/ks.cfg?mac=${net0/mac}
+initrd ${base-url}/jumpstrt.gz
+initrd ${base-url}/k.b00
+initrd ${base-url}/s.v00
+
+# Add more essential modules
+initrd ${base-url}/weaselin.v00
+initrd ${base-url}/vmkusb.v00
+initrd ${base-url}/vmx.v00
+initrd ${base-url}/vim.v00
+
+# Boot
+boot
+
+
+

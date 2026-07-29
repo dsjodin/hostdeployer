@@ -1,0 +1,46 @@
+.
+├── config
+│   ├── auth_config.php
+│   ├── credentials.json
+│   ├── global_config.json
+│   └── hosts.json
+├── dhcpd.conf
+├── dhcpd-ipxe.conf
+├── esxi
+│   ├── 8U3b
+│   └── 9.0
+├── ipxe
+│   ├── boot.ipxe
+│   └── ipxe.efi
+├── lib
+│   ├── auth.php
+│   └── utils.php
+├── logs
+│   ├── admin_dashboard.log
+│   ├── auth.log
+│   ├── ipxe_boot.log
+│   └── php_errors.log
+├── scripts
+│   ├── ilo_scanner.py
+│   └── secure_boot_manager.py
+├── templates
+│   └── kickstart_template.cfg
+├── tree.txt
+└── www
+    ├── admin_dashboard.bak
+    ├── admin_dashboard.php
+    ├── admin_functions.php
+    ├── admin_styles.css
+    ├── admin_ui.php
+    ├── auth_test.php
+    ├── boot.ipxe.php
+    ├── deployment_complete.php
+    ├── generate_hash.php
+    ├── generate_kickstart.php
+    ├── get_log.php
+    ├── login.php
+    ├── logout.php
+    ├── path_check.php
+    └── version-selector.php
+
+11 directories, 33 files
