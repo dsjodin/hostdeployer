@@ -1,0 +1,26 @@
+parameters:
+    level: 5
+
+    paths:
+        - lib
+        - www
+        - tests
+
+    # The tab files under www/ are included into admin_dashboard.php rather
+    # than being entry points of their own, so every symbol they use is in
+    # scope at runtime but not when the file is analysed alone. Point PHPStan
+    # at the shared libraries so those symbols resolve.
+    scanFiles:
+        - lib/utils.php
+        - lib/auth.php
+        - lib/bootcfg.php
+
+    scanDirectories:
+        - www
+
+    # The live configuration files are not in git (they hold credentials), so
+    # the constants they define cannot be resolved from a clean checkout.
+    ignoreErrors:
+        # Bootstrap-guarded helpers are declared inside if (!function_exists())
+        # blocks, which PHPStan reads as conditionally defined.
+        - identifier: function.inner

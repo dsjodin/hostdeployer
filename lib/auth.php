@@ -16,6 +16,12 @@ if (!defined('AUTODEPLOY_SESSION_TIMEOUT')) {
  * Start the session with hardened cookie parameters.
  *
  * Must be called before any output. Safe to call repeatedly.
+ *
+ * This is *not* invoked when the file is included. It used to be, which meant
+ * including the authentication helpers emitted a Set-Cookie header as a side
+ * effect -- so this file could not be pulled into a test, a CLI script or the
+ * REST API without starting a browser session nobody asked for. Every page
+ * that needs a session now says so.
  */
 function startAdminSession() {
     if (session_status() !== PHP_SESSION_NONE) {
@@ -38,8 +44,6 @@ function startAdminSession() {
     session_start();
 }
 
-startAdminSession();
-
 /**
  * Append a message to the authentication log.
  *
@@ -60,6 +64,8 @@ function auth_log($message, $level = 'INFO') {
  * @return string The session CSRF token, generating one if needed
  */
 function csrfToken() {
+    startAdminSession();
+
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
     }
@@ -80,6 +86,8 @@ function csrfField() {
  * @return bool True when the token matches
  */
 function verifyCsrfToken($postData = null) {
+    startAdminSession();
+
     $postData = $postData ?? $_POST;
     $supplied = $postData['csrf_token'] ?? '';
 
@@ -156,6 +164,8 @@ function verifyCredentials($username, $password) {
  * @param array $userData Result of verifyCredentials()
  */
 function establishSession(array $userData) {
+    startAdminSession();
+
     // Defeat session fixation: the pre-login session id must not survive.
     session_regenerate_id(true);
 
@@ -174,6 +184,8 @@ function establishSession(array $userData) {
  * @return array|false User data, or false (after redirecting) when not authenticated
  */
 function authenticate($logSuccess = false) {
+    startAdminSession();
+
     if (empty($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {
         redirectToLogin();
         return false;
@@ -204,6 +216,8 @@ function authenticate($logSuccess = false) {
  * @return array|null User data or null
  */
 function currentUser() {
+    startAdminSession();
+
     if (empty($_SESSION['authenticated']) || $_SESSION['authenticated'] !== true) {
         return null;
     }
@@ -254,6 +268,8 @@ function destroySession() {
  * Log the current user out and redirect to the login page.
  */
 function logout() {
+    startAdminSession();
+
     if (isset($_SESSION['username'])) {
         auth_log('User ' . $_SESSION['username'] . ' logged out');
     }
@@ -288,6 +304,8 @@ function hasRole($userData, $requiredRole) {
  * @return bool
  */
 function hasPermission($permission) {
+    startAdminSession();
+
     $role = $_SESSION['role'] ?? null;
     if ($role === null) {
         return false;

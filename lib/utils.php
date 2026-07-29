@@ -705,18 +705,39 @@ if (!function_exists('renderTemplate')) {
     function renderTemplate($template, array $variables) {
         $template = processConditionals($template, $variables);
 
-        $search = [];
-        $replace = [];
-        foreach ($variables as $key => $value) {
-            if (is_bool($value) || is_array($value) || is_object($value) || $value === null) {
-                continue;
-            }
-            $search[] = '{{' . $key . '}}';
-            $replace[] = (string)$value;
-        }
+        // One scan of the template, substituting each token from the map as it
+        // is reached. Replacement text is never re-examined.
+        //
+        // This used to be str_replace() with parallel search/replace arrays,
+        // under a comment claiming it was a single pass. It is not: with array
+        // arguments str_replace applies each pair in turn to the result of the
+        // previous one, so a value could be re-expanded by any token appearing
+        // later in $variables. A host whose datastore name was literally
+        // "{{ROOT_PASSWORD_HASH}}" would have had the hash rendered into its
+        // kickstart.
+        return (string)preg_replace_callback(
+            '/\{\{([A-Za-z0-9_]+)\}\}/',
+            static function (array $m) use ($variables) {
+                if (!array_key_exists($m[1], $variables)) {
+                    // Unknown tokens are left alone rather than blanked, so a
+                    // typo is visible in the output instead of silently
+                    // producing an empty value.
+                    return $m[0];
+                }
 
-        // Single pass so that a replacement value can never be re-expanded.
-        return str_replace($search, $replace, $template);
+                $value = $variables[$m[1]];
+
+                // Booleans drive conditionals and the rest have no sensible
+                // string form; substituting them would put stray characters
+                // into the kickstart.
+                if (is_bool($value) || is_array($value) || is_object($value) || $value === null) {
+                    return $m[0];
+                }
+
+                return (string)$value;
+            },
+            $template
+        );
     }
 }
 

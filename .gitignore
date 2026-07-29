@@ -6,6 +6,12 @@ config/credentials.json
 config/auth_config.php
 config/*.lock
 
+# Development dependencies. Never deployed -- the install rsync excludes them.
+# composer.lock is deliberately tracked: this is an application, so CI and
+# every developer should resolve to the same versions.
+/vendor/
+.phpunit.result.cache
+
 # Runtime state
 logs/
 esxi/*/
@@ -16,3 +22,7 @@ templates/backups/
 *.php_bak
 *~
 .DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc

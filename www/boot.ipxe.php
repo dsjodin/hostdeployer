@@ -8,6 +8,7 @@
  */
 
 require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/bootcfg.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -260,46 +261,17 @@ if ($bootCfg === false) {
     ipxeFail(['ERROR: could not read the ESXi boot configuration'], 5);
 }
 
-$kernel = '';
-$kernelopt = '';
-$modules = [];
+$parsedBootCfg = parseBootCfg($bootCfg);
 
-foreach (preg_split('/\r\n|\r|\n/', $bootCfg) as $line) {
-    $line = trim($line);
-    if ($line === '' || $line[0] === '#') {
-        continue;
-    }
-    $eq = strpos($line, '=');
-    if ($eq === false) {
-        continue;
-    }
-
-    $key = rtrim(substr($line, 0, $eq));
-    $value = ltrim(substr($line, $eq + 1));
-
-    switch ($key) {
-        case 'kernel':
-            $kernel = $value;
-            break;
-        // VMware ships "kernelopt"; accept "kernelopts" too since hand-edited
-        // boot.cfg files in this repo have used both spellings.
-        case 'kernelopt':
-        case 'kernelopts':
-            $kernelopt = $value;
-            break;
-        case 'modules':
-            $modules = array_filter(array_map('trim', explode('---', $value)), 'strlen');
-            break;
-    }
-}
-
-if ($kernel === '' || $modules === []) {
+if (!bootCfgIsUsable($parsedBootCfg)) {
     ipxeLog("Invalid boot.cfg for ESXi $esxiVersion (kernel or modules missing)", 'ERROR');
     ipxeFail(["ERROR: invalid boot configuration for ESXi $esxiVersion"], 5);
 }
 
-// Strip any "ks=" the packaged boot.cfg carries; we append our own below.
-$kernelopt = trim(preg_replace('/\bks=\S+/', '', $kernelopt));
+$kernel = $parsedBootCfg['kernel'];
+$modules = $parsedBootCfg['modules'];
+// The packaged file may carry its own ks=; we append our own below.
+$kernelopt = stripKickstartOption($parsedBootCfg['kernelopt']);
 
 // ---------------------------------------------------------------------------
 // Mark the host as deploying and emit the boot script

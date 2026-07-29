@@ -29,7 +29,7 @@ logs/                loggfiler
 ```bash
 # 1. Lägg trädet på plats
 install -d -m 0750 /srv/autodeploy
-rsync -a --exclude .git ./ /srv/autodeploy/
+rsync -a --exclude .git --exclude vendor --exclude tests ./ /srv/autodeploy/
 install -d -m 0750 -o www-data -g www-data /srv/autodeploy/logs
 
 # 2. Skapa konfigurationen från exempelfilerna
@@ -72,6 +72,28 @@ Skriptet validerar alla sina argument själv och tar inga andra kommandon.
 `AUTODEPLOY_ROOT` (miljövariabel, default `/srv/autodeploy`) styr var både
 PHP-koden och Python-skripten letar. Inga IP-adresser finns i koden — allt
 kommer från `config/global_config.json` respektive DHCP (`${next-server}`).
+
+## Utveckling
+
+Testerna och den statiska analysen är utvecklingsberoenden och installeras
+aldrig på servern — `rsync`-raden ovan utesluter både `vendor/` och `tests/`.
+
+```bash
+composer install
+
+composer test      # PHPUnit
+composer lint      # PHPStan level 5
+composer syntax    # php -l över hela trädet
+```
+
+Testerna täcker de rena funktionerna i `lib/` — MAC-normalisering,
+nätmaskvalidering, sökvägsskydd, mallrendering, `boot.cfg`-parsning och
+lösenordshashning. De rör varken filsystemet under `/srv/autodeploy`,
+konfigurationen eller nätverket; `tests/bootstrap.php` pekar om
+`AUTODEPLOY_ROOT` till en temporär katalog som städas efter körningen.
+
+Samma kontroller körs i CI (`.github/workflows/ci.yml`), tillsammans med
+`shellcheck` på `update_dhcp_config.sh` och `ruff` på `scripts/`.
 
 ## Krav
 
