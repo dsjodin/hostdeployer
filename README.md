@@ -1,7 +1,8 @@
 # hostdeployer
 
-Automatiserad ESXi-provisionering: DHCP → iPXE → HTTP → kickstart, med ett
-webbgränssnitt för att godkänna och konfigurera servrar.
+Automatiserad ESXi-provisionering: DHCP → UEFI HTTP Boot eller iPXE → mboot →
+kickstart, med ett webbgränssnitt och ett REST-API för att godkänna och
+konfigurera servrar.
 
 ## Dokumentation
 

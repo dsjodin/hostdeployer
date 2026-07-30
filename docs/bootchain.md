@@ -72,6 +72,50 @@ Från strömpåslag till färdig ESXi-host.
  └────────────────────────────────────────────────┘
 ```
 
+## Två bootvägar
+
+DHCP-klassen väljer väg. Båda slutar i samma `boot.cfg` och samma `ks.cfg`.
+
+```
+  UEFI HTTP Boot                          iPXE
+  (option 60 = HTTPClient)                (option 93 = arch 7/9/11)
+        │                                       │
+        │ option 67 = http://srv/mboot.efi      │ option 67 = ipxe.efi
+        ▼                                       ▼
+  www/mboot.efi.php                        ipxe.efi → boot.ipxe
+   löser upp hostens version                     │
+   och strömmar dess laddare                     ▼
+        │                                  www/boot.ipxe.php
+        │                                   chain <mboot> -c <boot.cfg.php>
+        └───────────────┬───────────────────────┘
+                        ▼
+                 www/boot.cfg.php
+                  en omskrivning, två transporter
+                        ▼
+                   ESXi-installer
+```
+
+**Varför inte 110 `module`-rader längre.** iPXE-vägen räknade tidigare upp
+varje modul ur `boot.cfg` i sitt eget skript. Det är en återimplementation av
+vad `mboot` redan gör, och den går sönder varje gång en release ändrar sin
+modullista. Nu chainar iPXE `mboot` och pekar den på samma genererade
+`boot.cfg` som HTTP Boot-vägen får.
+
+Saknas `mboot` i det uppackade mediet faller `boot.ipxe.php` tillbaka till
+modulräkningen och loggar en varning — hårdvara som redan fungerar slutar inte
+fungera för att mediet är ovanligt uppackat.
+
+**Varför en omskrivning och inte två.** via_go hade den här omskrivningen
+implementerad två gånger, en för TFTP och en för HTTP. De drev isär: en fix som
+tog bort `cdromBoot` nådde bara den ena, så PXE-bootade hostar fick en annan
+kommandorad än HTTP-bootade. `renderBootCfg()` har två anropare och ingen
+kopia.
+
+**Varför MAC:en inte alltid finns i URL:en.** DHCP option 67 namnger *en* URL
+för hela klassen, så en HTTP Boot-firmware kan inte skicka sin MAC. Servern
+identifierar då klienten på dess adress, samma fallback som
+`generate_kickstart.php` redan använder. iPXE-vägen skickar alltid `?mac=`.
+
 ## Statusmaskin
 
 ```
@@ -97,6 +141,9 @@ Från strömpåslag till färdig ESXi-host.
 
 | URL | Fil | Port | Autentisering |
 |---|---|---|---|
+| `/mboot.efi` | `www/mboot.efi.php` | 80 | nej |
+| `/boot.cfg` | `www/boot.cfg.php` | 80 | nej |
+| `/boot.cfg.php?mac=` | `www/boot.cfg.php` | 80 | nej |
 | `/ipxe/ipxe.efi` | statisk | 80 | nej |
 | `/ipxe/boot.ipxe` | statisk | 80 | nej |
 | `/boot.ipxe.php?mac=` | `www/boot.ipxe.php` | 80 | nej |

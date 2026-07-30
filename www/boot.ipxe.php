@@ -277,6 +277,7 @@ if ($baseUrl === '') {
 // The version was validated against [A-Za-z0-9._-] above.
 $imageUrl = $baseUrl . '/esxi/' . $esxiVersion;
 $ksUrl = $baseUrl . '/ks.cfg?mac=' . $mac;
+$bootCfgUrl = $baseUrl . '/boot.cfg.php?mac=' . $mac;
 
 if ($deploymentStatus === 'approved') {
     storeUpdateHost($mac, [
@@ -289,19 +290,47 @@ if ($deploymentStatus === 'approved') {
 // modules over HTTP, which is the longest silent stretch of the install.
 storeSetProgress($mac, 10, 'loading the installer');
 
+// mboot.efi is the ESXi bootloader. Where it lives differs between releases
+// and between how the media was extracted, so try the layouts ESXi actually
+// ships rather than assuming one.
+$mbootUrl = '';
+foreach (['/efi/boot/bootx64.efi', '/mboot.efi', '/EFI/BOOT/BOOTX64.EFI'] as $candidate) {
+    if (is_file($esxiPath . $candidate)) {
+        $mbootUrl = $imageUrl . $candidate;
+        break;
+    }
+}
+
 echo "#!ipxe\n\n";
 echo 'echo Booting ESXi ' . sanitizeIpxeText($esxiVersion) . ' installer for '
     . sanitizeIpxeText($hostname) . ' (' . $mac . ")\n\n";
 
-// mboot.efi is the ESXi bootloader that iPXE hands control to; the kernel
-// entry from boot.cfg is loaded as the first module, exactly as ESXi's own
-// boot.cfg describes it.
-echo 'kernel ' . $imageUrl . '/' . ltrim($kernel, '/') . ' ' . $kernelopt . ' ks=' . $ksUrl . "\n";
+if ($mbootUrl !== '') {
+    // Hand control to mboot and let it read the boot.cfg the server renders
+    // for this host. mboot is the thing VMware ships to load an ESXi kernel;
+    // enumerating ~110 modules into an iPXE script is a re-implementation of
+    // what it already does, and one that breaks whenever a release changes
+    // its module list. The same file is what a UEFI HTTP Boot host gets, so
+    // there is one rewrite to keep correct rather than two.
+    echo 'chain ' . $mbootUrl . ' -c ' . $bootCfgUrl . "\n";
 
-foreach ($modules as $module) {
-    echo 'module ' . $imageUrl . '/' . ltrim($module, '/') . "\n";
+    ipxeLog("Chained mboot for $hostname ($mac) using ESXi $esxiVersion");
+} else {
+    // No loader in the extracted media. Fall back to enumerating the modules,
+    // which is what this did before and still works; say so in the log,
+    // because the image is not laid out the way it should be.
+    ipxeLog(
+        "No mboot.efi found under $esxiPath; falling back to enumerating modules for $mac",
+        'WARNING'
+    );
+
+    echo 'kernel ' . $imageUrl . '/' . ltrim($kernel, '/') . ' ' . $kernelopt . ' ks=' . $ksUrl . "\n";
+
+    foreach ($modules as $module) {
+        echo 'module ' . $imageUrl . '/' . ltrim($module, '/') . "\n";
+    }
+
+    echo "\nboot\n";
+
+    ipxeLog("Generated iPXE boot script for $hostname ($mac) using ESXi $esxiVersion");
 }
-
-echo "\nboot\n";
-
-ipxeLog("Generated iPXE boot script for $hostname ($mac) using ESXi $esxiVersion");

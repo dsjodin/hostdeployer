@@ -7,7 +7,11 @@ med rakt motsatt arkitektur. Sju konkreta saker är värda att hämta hem.
 
 Relaterat: [`CODE-REVIEW.md`](CODE-REVIEW.md) · [`bootchain.md`](bootchain.md)
 
-**Status:** fas 1–6 är genomförda. Fas 7 återstår.
+**Status:** alla sju faser är genomförda.
+
+> **Otestat på riktig hårdvara:** UEFI HTTP Boot-vägen är verifierad
+> ände-till-ände mot fixtures, men inte mot firmware. Testa båda vägarna på
+> nested ESXi-VM:ar innan hårdvara rörs — se verifieringsavsnittet.
 
 > **Avvikelse i fas 4:** bara värdinventariet flyttade till SQLite.
 > `credentials.json` och `global_config.json` är kvar som filer — de är små
@@ -256,7 +260,7 @@ i `www/css/bootstrap.min.css`.
 
 ---
 
-## Fas 7 — Omskriven `boot.cfg` + UEFI HTTP Boot vid sidan av iPXE
+## Fas 7 — Omskriven `boot.cfg` + UEFI HTTP Boot vid sidan av iPXE ✅
 
 Störst förändring, och den som gör bootkedjan robust över ESXi-versioner.
 
