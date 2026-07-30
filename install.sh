@@ -5,6 +5,11 @@
 # packages, the tree under /srv/autodeploy, PHP-FPM, nginx with a certificate,
 # Kea DHCPv4, the secrets and the API token.
 #
+# Kea only. ISC dhcpd is end-of-life since December 2022, is not in Debian 13,
+# and has no control API -- which is what lets the admin UI change DHCP without
+# running anything as root. Supporting both would mean two config generators
+# and keeping the sudo rule alive for the dead one.
+#
 # Debian 13 ships PHP 8.4, nginx 1.26+ and Kea 2.6 in main, so nothing here
 # adds a third-party repository. That is the reason for pinning to trixie
 # rather than supporting a range of releases: on bookworm every one of those
@@ -595,21 +600,18 @@ INI
 
 POOL="/etc/php/${PHP_VERSION}/fpm/pool.d/www.conf"
 if [ -f "$POOL" ]; then
-    # DHCP_BACKEND makes the admin UI write Kea configuration rather than ISC.
     # PATH puts the venv first so the Python helpers find the redfish module.
-    if grep -q '^env\[DHCP_BACKEND\]' "$POOL"; then
+    if grep -q '^env\[AUTODEPLOY_ROOT\]' "$POOL"; then
         skip "pool environment already set"
     else
         cat >> "$POOL" <<POOLEOF
 
 ; ---- hostdeployer (install.sh) ----
-; The admin UI generates Kea configuration, not ISC dhcpd.
-env[DHCP_BACKEND] = kea
 ; The venv first, so python3 finds the redfish module when PHP shells out.
 env[PATH] = $ROOT/venv/bin:/usr/local/bin:/usr/bin:/bin
 env[AUTODEPLOY_ROOT] = $ROOT
 POOLEOF
-        info "set DHCP_BACKEND=kea and the helper PATH in the FPM pool"
+        info "set the helper PATH and AUTODEPLOY_ROOT in the FPM pool"
     fi
 fi
 

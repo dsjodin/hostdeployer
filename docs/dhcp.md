@@ -1,30 +1,41 @@
-# Migrera från ISC dhcpd till Kea
+# DHCP med Kea
 
-ISC dhcpd är EOL sedan december 2022. Kea är ISC:s egen ersättare och ger den
-här lösningen ett riktigt API i stället för "skriv om filen och starta om".
+hostdeployer stödjer **bara Kea**. ISC dhcpd är end-of-life sedan december
+2022, finns inte i Debian 13, och — det avgörande — har inget kontroll-API.
+Utan API måste varje ändring skrivas till en fil och tjänsten startas om, vilket
+kräver att webbservern kör något som root och tappar varje pågående
+DHCP-förhandling. Att stödja båda hade betytt två konfigurationsgeneratorer och
+att sudo-regeln fick leva kvar för den döda av dem.
 
-## 1. Installera
+## 1. Installation
+
+`install.sh` gör allt det här. Manuellt:
 
 ```bash
-apt install kea-dhcp4-server kea-ctrl-agent      # Debian/Ubuntu
-# dnf install kea                                # RHEL/Rocky
+apt install kea-dhcp4-server kea-ctrl-agent
 ```
 
-## 2. Konfigurera
+## 2. Konfiguration
 
-Utgå från `dhcp/kea-dhcp4.conf` i det här repot. Byt ut:
-
-- `interfaces` — vilket interface som lyssnar
-- `subnet`, `pools`, `routers`, `domain-name-servers`
-- `next-server` och URL:erna i `client-classes` → deployment-serverns adress
+`deploy/kea-config.sh` genererar filen. Det finns med flit ingen statisk
+exempelfil i repot: en sådan är en andra kopia av klassdefinitionerna, och den
+kopian drev isär från generatorn två gånger under utvecklingen — båda gångerna
+genom att peka UEFI HTTP Boot på fel laddare.
 
 ```bash
-cp dhcp/kea-dhcp4.conf /etc/kea/kea-dhcp4.conf
+deploy/kea-config.sh \
+    --interface ens192 --server-ip 192.0.2.10 \
+    --subnet 192.0.2.0/24 --pool "192.0.2.100 - 192.0.2.200" \
+    --gateway 192.0.2.1 --dns 192.0.2.53 --domain lab.local \
+    > /etc/kea/kea-dhcp4.conf
+
 kea-dhcp4 -t /etc/kea/kea-dhcp4.conf      # validera
 systemctl enable --now kea-dhcp4-server
 ```
 
-`install.sh` gör det här åt dig och använder samma generator.
+Det behövs bara vid installation, eller för att bygga om filen från grunden när
+Kea inte startar och alltså inte har någon socket att prata med. Löpande
+ändringar går via API:t.
 
 ## 2b. Ändringar i drift går via API:t, inte via filen
 
@@ -126,6 +137,11 @@ echo '{"command":"lease4-get-all","service":["dhcp4"]}' | kea-shell --host 127.0
 ## 6. Nästa steg för integrationen
 
 `processApproveHostAction()` i `www/host_functions.php` skriver idag bara
-`management_ip` till inventariet. Med Kea kan den samtidigt skicka en
-`reservation-add`, så servern får rätt adress redan under installationen i
-stället för en slumpmässig pool-adress. Det är inte implementerat än.
+`management_ip` till inventariet. Med kontrollsocketen på plats (`lib/kea.php`)
+kan den samtidigt skicka en `reservation-add`, så servern får sin riktiga adress
+redan under installationen i stället för en slumpmässig pool-adress. Byggstenen
+finns — `keaCommand('reservation-add', ...)` — men anropet är inte inkopplat.
+
+`keaUpdateNetwork()` bevarar redan befintliga `reservations` när subnätet
+uppdateras, så det steget kommer inte att slå sönder något som lagts till för
+hand under tiden.

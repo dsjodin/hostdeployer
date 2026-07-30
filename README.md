@@ -9,7 +9,7 @@ konfigurera servrar.
 - [`docs/CODE-REVIEW.md`](docs/CODE-REVIEW.md) — granskning och genomförda åtgärder
 - [`docs/PLAN-via-go-port.md`](docs/PLAN-via-go-port.md) — plan för att hämta hem via_go:s styrkor
 - [`docs/bootchain.md`](docs/bootchain.md) — bootkedjan steg för steg + felsökning
-- [`docs/dhcp-kea.md`](docs/dhcp-kea.md) — migrering från ISC dhcpd till Kea
+- [`docs/dhcp.md`](docs/dhcp.md) — DHCP med Kea: klasser, kontroll-API, felsökning
 
 ## Layout
 
@@ -20,7 +20,7 @@ ipxe/                boot.ipxe + ipxe.efi
 esxi/<version>/      uppackat installationsmedia
 templates/           kickstart-mallar
 config/              konfiguration + värdinventariet (SQLite), ignoreras i git
-dhcp/                exempel för Kea och ISC dhcpd
+deploy/              kea-config.sh (genererar Kea-konfigurationen)
 scripts/             ilo_scanner.py, secure_boot_manager.py
 logs/                loggfiler
 ```
@@ -75,8 +75,13 @@ ln -sf /etc/nginx/sites-available/autodeploy /etc/nginx/sites-enabled/
 # Lägg ett certifikat på /etc/ssl/autodeploy/server.{crt,key}
 nginx -t && systemctl reload nginx
 
-# 5. DHCP (se docs/dhcp-kea.md)
-install -m 0755 /srv/autodeploy/update_dhcp_config.sh /usr/local/bin/
+# 5. DHCP (se docs/dhcp.md)
+apt install kea-dhcp4-server kea-ctrl-agent
+/srv/autodeploy/deploy/kea-config.sh --interface ens192 --server-ip 10.0.0.2 \
+    --subnet 10.0.0.0/24 --pool "10.0.0.100 - 10.0.0.200" \
+    --gateway 10.0.0.1 --dns 10.0.0.53 > /etc/kea/kea-dhcp4.conf
+kea-dhcp4 -t /etc/kea/kea-dhcp4.conf && systemctl enable --now kea-dhcp4-server
+# www-data behöver skrivrättighet på /run/kea/kea4-ctrl-socket
 
 # 6. Installationsmedia
 # Ladda upp ISO:n under Settings > ESXi Versions i admin-UI:t, eller:
@@ -158,10 +163,12 @@ Det betyder att webbservern **inte kör någonting som root**. Den behöver bara
 skrivrättighet på kontrollsocketen, vilket `install.sh` ger genom att lägga
 `www-data` i Keas grupp. Den tidigare sudo-regeln tas bort om den finns kvar.
 
-`update_dhcp_config.sh` finns kvar men är inte längre UI:ts väg. Den behövs för
-ISC dhcpd (som saknar API och inte finns i Debian 13) och för att bygga om
-konfigurationsfilen från grunden när Kea inte startar och alltså inte har någon
-socket att prata med.
+Bara Kea stödjs. ISC dhcpd är EOL sedan december 2022, finns inte i Debian 13,
+och saknar det API som gör det ovanstående möjligt.
+
+Behöver du bygga om `/etc/kea/kea-dhcp4.conf` från grunden — efter en trasig
+handredigering, eller när Kea inte startar och alltså inte har någon socket att
+prata med — genererar `deploy/kea-config.sh` den. Se [`docs/dhcp.md`](docs/dhcp.md).
 
 ## Konfiguration
 
@@ -222,13 +229,13 @@ konfigurationen eller nätverket; `tests/bootstrap.php` pekar om
 `AUTODEPLOY_ROOT` till en temporär katalog som städas efter körningen.
 
 Samma kontroller körs i CI (`.github/workflows/ci.yml`), tillsammans med
-`shellcheck` på `update_dhcp_config.sh` och `ruff` på `scripts/`.
+`shellcheck` på `install.sh` och `deploy/`, och `ruff` på `scripts/`.
 
 ## Krav
 
 - PHP 8.1+ med php-fpm
 - nginx
-- Kea DHCPv4 (rekommenderat) eller ISC dhcpd
+- Kea DHCPv4 2.6+ (ISC dhcpd stödjs inte)
 - Python 3.9+ med `requests`; `redfish` krävs bara för secure boot-hanteringen
 - `bsdtar`, `7z` eller `xorriso` för ISO-uppladdning (valfritt — media kan
   fortfarande packas upp för hand på servern)

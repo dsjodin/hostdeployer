@@ -9,7 +9,7 @@ Från strömpåslag till färdig ESXi-host.
       │ 1. DHCP DISCOVER  (option 60 = HTTPClient / option 93 = arch)
       ▼
  ┌──────────────────────────────────────────────────────────────┐
- │  DHCP (Kea eller ISC dhcpd)                                  │
+ │  DHCP (Kea)                                                  │
  │    next-server = <deployment-server>                         │
  │    filename    = http://<server>/ipxe/ipxe.efi               │
  │                  (eller /ipxe/boot.ipxe om klienten är iPXE) │
