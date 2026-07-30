@@ -52,9 +52,12 @@ nginx -t && systemctl reload nginx
 # 5. DHCP (se docs/dhcp-kea.md)
 install -m 0755 /srv/autodeploy/update_dhcp_config.sh /usr/local/bin/
 
-# 6. Packa upp installationsmedia
-mkdir -p /srv/autodeploy/esxi/8.0U3
-# montera ISO:n och kopiera innehållet hit (boot.cfg måste finnas)
+# 6. Installationsmedia
+# Ladda upp ISO:n under Settings > ESXi Versions i admin-UI:t, eller:
+#   curl -H "Authorization: Bearer $TOKEN" -F version=8.0U3 \
+#        -F sha256=<checksumma> -F image=@VMware-ESXi-8.0U3.iso \
+#        https://<server>/api/v1/images
+# Kräver bsdtar, 7z eller xorriso på servern.
 ```
 
 ### Värdinventariet
@@ -100,7 +103,7 @@ sparas. Kommandot ovan gör det direkt.
 ### API-token
 
 Python-skripten läser och skriver via REST-API:t i stället för att öppna
-`config/hosts.json` och `config/credentials.json` direkt. När admin-UI:t startar
+`config/credentials.json` direkt. När admin-UI:t startar
 en iLO-skanning behöver den processen en token:
 
 ```bash
@@ -154,6 +157,8 @@ curl -H "Authorization: Bearer $TOKEN" https://<server>/api/v1/hosts
 | `POST` | `/api/v1/hosts/discovered` | write |
 | `GET` `PUT` | `/api/v1/credentials/{ilo\|esxi}` | settings |
 | `POST` | `/api/v1/scan` | scan |
+| `GET` `POST` | `/api/v1/images` | read / settings |
+| `GET` `DELETE` | `/api/v1/images/{version}` | read / settings |
 | `GET` | `/api/v1/versions` | read |
 
 MAC-adressen i sökvägen normaliseras, så `00-0C-29-91-CF-EB` och
@@ -192,4 +197,6 @@ Samma kontroller körs i CI (`.github/workflows/ci.yml`), tillsammans med
 - nginx
 - Kea DHCPv4 (rekommenderat) eller ISC dhcpd
 - Python 3.9+ med `requests`; `redfish` krävs bara för secure boot-hanteringen
+- `bsdtar`, `7z` eller `xorriso` för ISO-uppladdning (valfritt — media kan
+  fortfarande packas upp för hand på servern)
 - UEFI-servrar (ESXi 8 stödjer inte legacy BIOS)

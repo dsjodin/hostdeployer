@@ -19,6 +19,7 @@
 require_once __DIR__ . '/../lib/api_auth.php';
 require_once __DIR__ . '/host_functions.php';
 require_once __DIR__ . '/hardware_functions.php';
+require_once __DIR__ . '/../lib/images.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -168,6 +169,10 @@ try {
                 'default'  => $globalConfig['deployment']['default_version'] ?? '',
                 'versions' => array_keys($globalConfig['deployment']['esxi_versions'] ?? []),
             ]);
+            break;
+
+        case 'images':
+            apiHandleImages($method, array_slice($segments, 1));
             break;
 
         case 'scan':
@@ -483,4 +488,147 @@ function apiHandleCredentials($method, array $rest) {
     }
 
     apiError('Method not allowed', 405);
+}
+
+/**
+ * /v1/images -- the installed ESXi media.
+ *
+ * Uploading an ISO here replaces four manual steps on the deployment server:
+ * mount, copy, unmount, edit global_config.json. None of those were checked,
+ * and a mistake in any of them surfaced as a host that boots the installer and
+ * then cannot find its modules.
+ *
+ * @param string   $method HTTP method
+ * @param string[] $rest   Path segments after "images"
+ */
+function apiHandleImages($method, array $rest) {
+    global $identity;
+
+    if ($rest === []) {
+        if ($method === 'GET') {
+            apiRequire('read');
+            apiRespond([
+                'images'    => imageList(),
+                // Named so a failed upload can be diagnosed without shell
+                // access: "no extractor" is a different problem to "bad ISO".
+                'extractor' => imageAvailableExtractor(),
+            ]);
+        }
+
+        if ($method === 'POST') {
+            apiRequire('settings');
+
+            $upload = $_FILES['image'] ?? null;
+            if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                apiError('Expected a multipart upload in the "image" field: ' . apiUploadError($upload), 400);
+            }
+
+            $version = (string)($_POST['version'] ?? '');
+            if (!imageIsValidVersionName($version)) {
+                apiError('The version name may only contain letters, digits, dot, dash and underscore', 400);
+            }
+
+            $result = imageInstall(
+                $upload['tmp_name'],
+                $version,
+                (string)($_POST['description'] ?? ''),
+                (string)($_POST['sha256'] ?? '')
+            );
+
+            // The upload is a temporary file either way; PHP removes it when
+            // the request ends, but not before this handler could have copied
+            // several gigabytes of it into the image directory on failure.
+            if (!$result['success']) {
+                apiError($result['error'], 400);
+            }
+
+            apiLog("Token '{$identity['name']}' installed ESXi version $version");
+            apiRespond(['message' => $result['message'], 'version' => $version]);
+        }
+
+        apiError('Method not allowed', 405);
+    }
+
+    $version = (string)$rest[0];
+    if (!imageIsValidVersionName($version)) {
+        apiError('Invalid version name', 400);
+    }
+
+    if ($method === 'DELETE') {
+        apiRequire('settings');
+
+        $dir = imageDirectory($version);
+        if ($dir === null || !is_dir($dir)) {
+            apiError('That ESXi version is not installed', 404);
+        }
+
+        // A host still pointing at this version would fail to boot, so say so
+        // rather than discovering it at the boot prompt.
+        $inUse = [];
+        foreach (storeLoadHosts() as $host) {
+            if (($host['esxi_version'] ?? '') === $version) {
+                $inUse[] = formatMac($host['mac_address'] ?? '');
+            }
+        }
+
+        if ($inUse !== [] && empty($_GET['force'])) {
+            apiError(
+                'Still assigned to ' . count($inUse) . ' host(s): ' . implode(', ', array_slice($inUse, 0, 5))
+                    . '. Reassign them, or repeat with ?force=1.',
+                409
+            );
+        }
+
+        if (!imageRemoveDirectory($version)) {
+            apiError('Could not remove the image directory', 500);
+        }
+
+        imageUnregister($version);
+
+        apiLog("Token '{$identity['name']}' deleted ESXi version $version");
+        apiRespond(['message' => "ESXi version '$version' removed"]);
+    }
+
+    if ($method === 'GET') {
+        apiRequire('read');
+
+        foreach (imageList() as $image) {
+            if ($image['version'] === $version) {
+                apiRespond($image);
+            }
+        }
+
+        apiError('That ESXi version is not installed', 404);
+    }
+
+    apiError('Method not allowed', 405);
+}
+
+/**
+ * Turn a PHP upload error code into something an operator can act on.
+ *
+ * @param array<string, mixed>|null $upload Entry from $_FILES
+ * @return string
+ */
+function apiUploadError($upload) {
+    $code = is_array($upload) ? ($upload['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+
+    switch ($code) {
+        case UPLOAD_ERR_INI_SIZE:
+        case UPLOAD_ERR_FORM_SIZE:
+            // The likeliest failure by far: an ESXi ISO is several gigabytes
+            // and the stock limits are measured in megabytes.
+            return 'the file exceeds the upload limit; raise upload_max_filesize and post_max_size in php.ini '
+                . 'and client_max_body_size in nginx';
+        case UPLOAD_ERR_PARTIAL:
+            return 'the upload was interrupted';
+        case UPLOAD_ERR_NO_FILE:
+            return 'no file was sent';
+        case UPLOAD_ERR_NO_TMP_DIR:
+            return 'PHP has no temporary directory to write to';
+        case UPLOAD_ERR_CANT_WRITE:
+            return 'PHP could not write the upload to disk';
+        default:
+            return 'upload error code ' . $code;
+    }
 }

@@ -7,7 +7,7 @@ med rakt motsatt arkitektur. Sju konkreta saker är värda att hämta hem.
 
 Relaterat: [`CODE-REVIEW.md`](CODE-REVIEW.md) · [`bootchain.md`](bootchain.md)
 
-**Status:** fas 1–5 är genomförda. Fas 6–7 återstår.
+**Status:** fas 1–6 är genomförda. Fas 7 återstår.
 
 > **Avvikelse i fas 4:** bara värdinventariet flyttade till SQLite.
 > `credentials.json` och `global_config.json` är kvar som filer — de är små
@@ -235,7 +235,7 @@ i `www/css/bootstrap.min.css`.
 
 ---
 
-## Fas 6 — ISO-uppladdning med hashverifiering
+## Fas 6 — ISO-uppladdning med hashverifiering ✅
 
 - `POST /api/v1/images` (multipart) + uppladdningsformulär i `www/settings.php`.
 - Verifiera sha256 mot medskickad hash med `hash_file('sha256', $path)` —

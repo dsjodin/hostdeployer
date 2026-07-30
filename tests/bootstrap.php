@@ -44,4 +44,5 @@ require_once __DIR__ . '/../lib/store.php';
 
 // lib/auth.php no longer starts a session when it is included, which is what
 // makes it safe to pull in here. api_auth.php builds on it.
+require_once __DIR__ . '/../lib/images.php';
 require_once __DIR__ . '/../lib/api_auth.php';
