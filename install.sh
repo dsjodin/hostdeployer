@@ -909,17 +909,36 @@ fi
 # An if rather than "|| { retry; die; }": a brace group after the final || is
 # not exempt from set -e, so the retry that exists to show the error killed the
 # script before die() could explain what the error meant.
-if ! kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1; then
+# Validated as the service user, not as root. Debian confines kea-dhcp4 with an
+# AppArmor profile that denies dac_read_search and dac_override, and /etc/kea is
+# not traversable by uid 0 on its own permissions -- root normally gets there
+# through exactly those capabilities. So a syntax check run as root fails on
+# every file in that directory, including the one the package shipped, with
+# "Unable to open file": a message that reads like the file is missing when in
+# fact it was never opened.
+#
+# systemd starts the daemon as $KEA_USER, which owns the directory and needs no
+# bypass. Checking as that user is both what works and what the check is
+# actually meant to assert -- that the service can read what we just wrote.
+kea_check() {
+    if [ "$KEA_USER" != root ] && command -v runuser >/dev/null 2>&1; then
+        runuser -u "$KEA_USER" -- kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+    else
+        kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+    fi
+}
+
+if ! kea_check >/dev/null 2>&1; then
     printf '\n'
-    kea-dhcp4 -t /etc/kea/kea-dhcp4.conf || true
+    kea_check || true
     die "Kea rejected /etc/kea/kea-dhcp4.conf.
 
-     'Unable to open file' means Kea could not read it at all rather than that
-     the contents are wrong. Check, in this order:
-       ls -l /etc/kea/kea-dhcp4.conf          exists, non-empty, mode 0644?
-       aa-status | grep -i kea                confined by AppArmor?
-       journalctl -t audit --since -5min | grep -i kea    denied?
-     Otherwise the parse error above names the line."
+     'Unable to open file' means Kea never opened it, rather than that the
+     contents are wrong -- so look at access, not at JSON:
+       ls -ld /etc/kea                          traversable by $KEA_USER?
+       ls -l  /etc/kea/kea-dhcp4.conf           readable by $KEA_USER?
+       dmesg | grep -i 'apparmor.*kea' | tail   denied, and which operation?
+     Any other message is a parse error and names the line."
 fi
 
 systemctl enable --now kea-dhcp4-server >/dev/null 2>&1 || true

@@ -274,6 +274,73 @@ i sig är rätt — men det gör att flaggan inte hjälper mot just det här fel
 
 ---
 
+## 3c. `Syntax check failed with: Unable to open file /etc/kea/kea-dhcp4.conf`
+
+Filen finns, är 0644, och `head` läser den utan problem som root. Ändå säger
+`kea-dhcp4 -t` att den inte kan öppnas — och det gäller **varje** fil i
+`/etc/kea`, inklusive den som paketet levererade.
+
+### Orsak
+
+Tre saker tillsammans:
+
+1. Debian 13 confinar `/usr/sbin/kea-dhcp4` med en AppArmor-profil som nekar
+   `dac_read_search` och `dac_override`. I `dmesg`:
+
+   ```
+   apparmor="DENIED" operation="capable" profile="kea-dhcp4" capname="dac_read_search"
+   apparmor="DENIED" operation="capable" profile="kea-dhcp4" capname="dac_override"
+   ```
+
+2. `/etc/kea` är inte traverserbar för uid 0 på sina egna rättigheter. Root tar
+   sig normalt dit genom precis de två capabilities som nekas ovan.
+
+3. Profilen tillåter sökvägen — `/etc/kea/ r,` och `/etc/kea/** r,` står i
+   `/etc/apparmor.d/usr.sbin.kea-dhcp4`. Det är alltså inte AppArmors filregler
+   som stoppar läsningen, utan DAC-kontrollen som sker före dem, med bypassen
+   bortopererad.
+
+Daemonen påverkas inte: systemd startar den som `_kea`, som äger katalogen och
+aldrig behöver någon bypass. Det är bara en syntaxkontroll körd som root som
+träffar det här — vilket är exakt vad `install.sh` gjorde.
+
+Det är också därför felet är så förvirrande: "Unable to open file" låter som att
+filen saknas, men den öppnades aldrig. Ett parse-fel hade namngett raden.
+
+### Åtgärd i koden
+
+Validera som tjänsteanvändaren i stället för som root:
+
+```bash
+runuser -u "$KEA_USER" -- kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+```
+
+Det är dessutom det kontrollen är till för att påstå: att *tjänsten* kan läsa
+det vi nyss skrev. En kontroll som lyckas som root och sedan låter daemonen
+misslyckas hade varit sämre än ingen kontroll alls.
+
+### Så testar du för hand
+
+```bash
+ls -ld /etc/kea
+sudo -u _kea kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+```
+
+Vill du ändå kunna köra den som root, lägg till en lokal override — profilen
+inkluderar redan `#include <local/usr.sbin.kea-dhcp4>`:
+
+```bash
+sudo tee /etc/apparmor.d/local/usr.sbin.kea-dhcp4 >/dev/null <<'EOF'
+capability dac_read_search,
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.kea-dhcp4
+```
+
+Men det ger tillbaka en bypass som paketet medvetet tagit bort. Att köra
+kontrollen som rätt användare är det bättre svaret.
+
+---
+
 ## 4. Mindre fel i samma skript
 
 Alla nedan är samma sorts problem som avsnitt 1: `set -e` plus ett kommando som
