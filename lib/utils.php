@@ -31,6 +31,9 @@ if (!defined('AUTODEPLOY_HOSTS_CONFIG')) {
 if (!defined('AUTODEPLOY_CREDENTIALS')) {
     define('AUTODEPLOY_CREDENTIALS', AUTODEPLOY_CONFIG_DIR . '/credentials.json');
 }
+if (!defined('AUTODEPLOY_API_LOCAL_TOKEN')) {
+    define('AUTODEPLOY_API_LOCAL_TOKEN', AUTODEPLOY_CONFIG_DIR . '/api_local_token');
+}
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -438,61 +441,6 @@ if (!function_exists('updateJsonConfig')) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Credentials
-// ---------------------------------------------------------------------------
-
-if (!function_exists('loadSecureCredentials')) {
-    /**
-     * Load credentials, optionally narrowed to a type and a specific host.
-     *
-     * @param string|null $credentialType Type of credential (ilo, esxi, db)
-     * @param string|null $macAddress     MAC for host-specific overrides
-     * @return array|null Credentials array or null when not found
-     */
-    function loadSecureCredentials($credentialType = null, $macAddress = null) {
-        $credentials = loadJsonConfig(AUTODEPLOY_CREDENTIALS);
-        if ($credentials === null) {
-            return null;
-        }
-
-        if ($credentialType === null) {
-            return $credentials;
-        }
-
-        if (!isset($credentials[$credentialType]) || !is_array($credentials[$credentialType])) {
-            return null;
-        }
-
-        $section = $credentials[$credentialType];
-
-        if ($macAddress !== null) {
-            $macFormatted = formatMac($macAddress);
-            if ($macFormatted !== '' && isset($section['hosts'][$macFormatted]) && is_array($section['hosts'][$macFormatted])) {
-                return array_merge($section, $section['hosts'][$macFormatted]);
-            }
-        }
-
-        return $section;
-    }
-}
-
-if (!function_exists('saveSecureCredentials')) {
-    /**
-     * Persist the credentials file with restrictive permissions.
-     *
-     * @param array $credentials Full credentials structure
-     * @return bool True on success
-     */
-    function saveSecureCredentials(array $credentials) {
-        $ok = saveJsonConfig(AUTODEPLOY_CREDENTIALS, $credentials);
-        if ($ok) {
-            @chmod(AUTODEPLOY_CREDENTIALS, 0640);
-        }
-        return $ok;
-    }
-}
-
 if (!function_exists('generateEsxiPasswordHash')) {
     /**
      * Generate an ESXi-compatible SHA-512 crypt hash.
@@ -588,61 +536,6 @@ if (!function_exists('hostMatchesMac')) {
     }
 }
 
-if (!function_exists('updateHostByMac')) {
-    /**
-     * Merge new fields into a host entry, atomically and under a lock.
-     *
-     * @param string      $mac        MAC address of the host to update
-     * @param array       $newData    Fields to merge into the host entry
-     * @param string|null $configPath Path to hosts.json (defaults to the standard location)
-     * @return bool True when the host was found and the file written
-     */
-    function updateHostByMac($mac, array $newData, $configPath = null) {
-        $configPath = $configPath ?: AUTODEPLOY_HOSTS_CONFIG;
-        $mac = formatMac($mac);
-        if ($mac === '') {
-            return false;
-        }
-
-        $found = false;
-        $ok = updateJsonConfig($configPath, function (array &$config) use ($mac, $newData, &$found) {
-            foreach ($config['hosts'] as &$host) {
-                if (hostMatchesMac($host, $mac)) {
-                    $host = array_merge($host, $newData);
-                    $found = true;
-                    break;
-                }
-            }
-            unset($host);
-            return $found;
-        });
-
-        if (!$found) {
-            logMessage("Host with MAC $mac not found for update", 'WARNING');
-        }
-
-        return $ok && $found;
-    }
-}
-
-if (!function_exists('updateHostLastSeen')) {
-    /**
-     * @param string      $macAddress   MAC address of the host
-     * @param string|null $serialNumber Optional serial number to record
-     * @return bool True on success
-     */
-    function updateHostLastSeen($macAddress, $serialNumber = null) {
-        $data = ['last_seen' => date('Y-m-d H:i:s')];
-
-        if ($serialNumber !== null && $serialNumber !== '') {
-            // Serial numbers arrive from the installer; keep them printable.
-            $data['serial_number'] = preg_replace('/[^\x20-\x7E]/', '', (string)$serialNumber);
-        }
-
-        return updateHostByMac($macAddress, $data);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Templating
 // ---------------------------------------------------------------------------
@@ -705,18 +598,39 @@ if (!function_exists('renderTemplate')) {
     function renderTemplate($template, array $variables) {
         $template = processConditionals($template, $variables);
 
-        $search = [];
-        $replace = [];
-        foreach ($variables as $key => $value) {
-            if (is_bool($value) || is_array($value) || is_object($value) || $value === null) {
-                continue;
-            }
-            $search[] = '{{' . $key . '}}';
-            $replace[] = (string)$value;
-        }
+        // One scan of the template, substituting each token from the map as it
+        // is reached. Replacement text is never re-examined.
+        //
+        // This used to be str_replace() with parallel search/replace arrays,
+        // under a comment claiming it was a single pass. It is not: with array
+        // arguments str_replace applies each pair in turn to the result of the
+        // previous one, so a value could be re-expanded by any token appearing
+        // later in $variables. A host whose datastore name was literally
+        // "{{ROOT_PASSWORD_HASH}}" would have had the hash rendered into its
+        // kickstart.
+        return (string)preg_replace_callback(
+            '/\{\{([A-Za-z0-9_]+)\}\}/',
+            static function (array $m) use ($variables) {
+                if (!array_key_exists($m[1], $variables)) {
+                    // Unknown tokens are left alone rather than blanked, so a
+                    // typo is visible in the output instead of silently
+                    // producing an empty value.
+                    return $m[0];
+                }
 
-        // Single pass so that a replacement value can never be re-expanded.
-        return str_replace($search, $replace, $template);
+                $value = $variables[$m[1]];
+
+                // Booleans drive conditionals and the rest have no sensible
+                // string form; substituting them would put stray characters
+                // into the kickstart.
+                if (is_bool($value) || is_array($value) || is_object($value) || $value === null) {
+                    return $m[0];
+                }
+
+                return (string)$value;
+            },
+            $template
+        );
     }
 }
 
@@ -809,6 +723,55 @@ if (!function_exists('disableSecureBoot')) {
     }
 }
 
+if (!function_exists('apiLocalToken')) {
+    /**
+     * The token the admin UI hands to the Python helpers it shells out to.
+     *
+     * The helpers reach their data over the API, so a scan triggered from the
+     * dashboard needs a credential to make that call with. Only the digest of a
+     * token is kept in auth_config.php, and a digest cannot be handed to a
+     * subprocess, so the raw value for this one lives in its own file with the
+     * same handling as any other secret in config/.
+     *
+     * Returns '' when the file is absent, which is not fatal: the API still works
+     * for external automation, and the failure surfaces as the scan reporting
+     * that it has no token rather than as a silent no-op.
+     *
+     * @return string The raw token, or '' when none is installed
+     */
+    function apiLocalToken() {
+        if (!is_file(AUTODEPLOY_API_LOCAL_TOKEN)) {
+            return '';
+        }
+
+        $token = @file_get_contents(AUTODEPLOY_API_LOCAL_TOKEN);
+        if ($token === false) {
+            logMessage('Local API token file exists but could not be read', 'ERROR');
+            return '';
+        }
+
+        return trim($token);
+    }
+
+}
+
+if (!function_exists('apiLocalTokenEnv')) {
+    /**
+     * Build the environment prefix for shelling out to a helper script.
+     *
+     * @return string A "VAR=value " prefix for a shell command, or '' when no
+     *                local token is installed
+     */
+    function apiLocalTokenEnv() {
+        $token = apiLocalToken();
+        if ($token === '') {
+            return '';
+        }
+
+        return 'AUTODEPLOY_API_TOKEN=' . escapeshellarg($token) . ' ';
+    }
+}
+
 if (!function_exists('runSecureBootManager')) {
     /**
      * Invoke scripts/secure_boot_manager.py for a host.
@@ -824,8 +787,12 @@ if (!function_exists('runSecureBootManager')) {
         }
 
         $action = $enable ? 'enable' : 'disable';
+        // The helper reads the host and its iLO credentials over the REST API
+        // rather than off the disk, so it needs a token. See
+        // lib/api_auth.php --local.
         $command = sprintf(
-            'python3 %s --mac %s --action %s 2>&1',
+            '%spython3 %s --mac %s --action %s 2>&1',
+            apiLocalTokenEnv(),
             escapeshellarg(AUTODEPLOY_ROOT . '/scripts/secure_boot_manager.py'),
             escapeshellarg($mac),
             escapeshellarg($action)

@@ -10,6 +10,7 @@
 define('ADMIN_DASHBOARD', true);
 
 require_once __DIR__ . '/../lib/auth.php';
+require_once __DIR__ . '/../lib/images.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -141,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ---------------------------------------------------------------------------
 
 $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-$hostsConfig = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
+$hostsConfig = storeLoadHostsConfig();
 
 if ($globalConfig === null) {
     dashboard_log('Failed to load global configuration', 'ERROR');
@@ -163,7 +164,6 @@ if ($error !== '') {
     renderAlert($error, 'danger');
 }
 
-renderTabsNav($activeTab);
 
 switch ($activeTab) {
     case 'hosts':

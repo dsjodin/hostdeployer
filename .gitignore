@@ -2,9 +2,20 @@
 # Start from the matching *.example.* file.
 config/global_config.json
 config/hosts.json
+
+# The host inventory database (and its WAL sidecars)
+config/autodeploy.db
+config/autodeploy.db-wal
+config/autodeploy.db-shm
 config/credentials.json
 config/auth_config.php
 config/*.lock
+
+# Development dependencies. Never deployed -- the install rsync excludes them.
+# composer.lock is deliberately tracked: this is an application, so CI and
+# every developer should resolve to the same versions.
+/vendor/
+.phpunit.result.cache
 
 # Runtime state
 logs/
@@ -16,3 +27,14 @@ templates/backups/
 *.php_bak
 *~
 .DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local API token for the helper scripts
+config/api_local_token
+
+# Encryption key for the stored credentials. Losing this makes every stored
+# password permanently unreadable -- back it up somewhere other than git.
+config/secret.key

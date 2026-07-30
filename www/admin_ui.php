@@ -710,6 +710,94 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
+<script>
+// Live progress for hosts that are installing.
+//
+// Polling rather than server-sent events: php-fpm holds a worker for the whole
+// life of an SSE connection, so twenty operators watching twenty installs would
+// exhaust the pool and take the boot chain down with it. A request every few
+// seconds costs nothing by comparison.
+(function () {
+    'use strict';
+
+    var INTERVAL = 3000;
+    var timer = null;
+
+    function bars() {
+        return document.querySelectorAll('[data-progress-for]');
+    }
+
+    function apply(mac, state) {
+        var wrapper = document.querySelector('[data-progress-for="' + mac + '"]');
+        if (wrapper) {
+            var bar = wrapper.querySelector('.progress-bar');
+            if (bar) {
+                bar.style.width = state.progress + '%';
+                bar.setAttribute('aria-valuenow', state.progress);
+                bar.textContent = state.progress + '%';
+            }
+        }
+
+        var label = document.querySelector('[data-progress-text-for="' + mac + '"]');
+        if (label) {
+            label.textContent = state.text || '';
+        }
+    }
+
+    function poll() {
+        if (bars().length === 0) {
+            // Nothing is installing; stop asking until the page is reloaded.
+            clearInterval(timer);
+            return;
+        }
+
+        fetch('host_status.php', { credentials: 'same-origin' })
+            .then(function (response) {
+                if (response.status === 401) {
+                    // The session went away. Reloading lands on the login page
+                    // rather than leaving a dashboard that quietly stopped
+                    // updating.
+                    window.location.reload();
+                    return null;
+                }
+                return response.ok ? response.json() : null;
+            })
+            .then(function (data) {
+                if (!data || !data.hosts) {
+                    return;
+                }
+
+                var stillDeploying = false;
+
+                bars().forEach(function (wrapper) {
+                    var mac = wrapper.getAttribute('data-progress-for');
+                    var state = data.hosts[mac];
+
+                    if (state) {
+                        apply(mac, state);
+                        stillDeploying = true;
+                    }
+                });
+
+                // A host that finished is no longer in the response; the row
+                // needs re-rendering server side to show its new state.
+                if (!stillDeploying) {
+                    window.location.reload();
+                }
+            })
+            .catch(function () {
+                // A failed poll is not worth reporting: the next one is three
+                // seconds away, and the dashboard is still usable meanwhile.
+            });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        if (bars().length > 0) {
+            timer = setInterval(poll, INTERVAL);
+        }
+    });
+}());
+</script>
 </body>
 </html>
     <?php

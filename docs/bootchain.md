@@ -33,7 +33,7 @@ Från strömpåslag till färdig ESXi-host.
  ┌────────────────────────────────────────────────────────────────┐
  │  www/boot.ipxe.php                                             │
  │                                                                │
- │   slår upp MAC i hosts.json (även additional_macs)             │
+ │   slår upp MAC i inventariet (även sekundära MAC-adresser)    │
  │                                                                │
  │   okänd MAC + autoreg på  → registrera som pending → vänta     │
  │   okänd MAC + autoreg av  → vänta, max 5 försök                │
@@ -72,6 +72,50 @@ Från strömpåslag till färdig ESXi-host.
  └────────────────────────────────────────────────┘
 ```
 
+## Två bootvägar
+
+DHCP-klassen väljer väg. Båda slutar i samma `boot.cfg` och samma `ks.cfg`.
+
+```
+  UEFI HTTP Boot                          iPXE
+  (option 60 = HTTPClient)                (option 93 = arch 7/9/11)
+        │                                       │
+        │ option 67 = http://srv/mboot.efi      │ option 67 = ipxe.efi
+        ▼                                       ▼
+  www/mboot.efi.php                        ipxe.efi → boot.ipxe
+   löser upp hostens version                     │
+   och strömmar dess laddare                     ▼
+        │                                  www/boot.ipxe.php
+        │                                   chain <mboot> -c <boot.cfg.php>
+        └───────────────┬───────────────────────┘
+                        ▼
+                 www/boot.cfg.php
+                  en omskrivning, två transporter
+                        ▼
+                   ESXi-installer
+```
+
+**Varför inte 110 `module`-rader längre.** iPXE-vägen räknade tidigare upp
+varje modul ur `boot.cfg` i sitt eget skript. Det är en återimplementation av
+vad `mboot` redan gör, och den går sönder varje gång en release ändrar sin
+modullista. Nu chainar iPXE `mboot` och pekar den på samma genererade
+`boot.cfg` som HTTP Boot-vägen får.
+
+Saknas `mboot` i det uppackade mediet faller `boot.ipxe.php` tillbaka till
+modulräkningen och loggar en varning — hårdvara som redan fungerar slutar inte
+fungera för att mediet är ovanligt uppackat.
+
+**Varför en omskrivning och inte två.** via_go hade den här omskrivningen
+implementerad två gånger, en för TFTP och en för HTTP. De drev isär: en fix som
+tog bort `cdromBoot` nådde bara den ena, så PXE-bootade hostar fick en annan
+kommandorad än HTTP-bootade. `renderBootCfg()` har två anropare och ingen
+kopia.
+
+**Varför MAC:en inte alltid finns i URL:en.** DHCP option 67 namnger *en* URL
+för hela klassen, så en HTTP Boot-firmware kan inte skicka sin MAC. Servern
+identifierar då klienten på dess adress, samma fallback som
+`generate_kickstart.php` redan använder. iPXE-vägen skickar alltid `?mac=`.
+
 ## Statusmaskin
 
 ```
@@ -97,11 +141,15 @@ Från strömpåslag till färdig ESXi-host.
 
 | URL | Fil | Port | Autentisering |
 |---|---|---|---|
+| `/mboot.efi` | `www/mboot.efi.php` | 80 | nej |
+| `/boot.cfg` | `www/boot.cfg.php` | 80 | nej |
+| `/boot.cfg.php?mac=` | `www/boot.cfg.php` | 80 | nej |
 | `/ipxe/ipxe.efi` | statisk | 80 | nej |
 | `/ipxe/boot.ipxe` | statisk | 80 | nej |
 | `/boot.ipxe.php?mac=` | `www/boot.ipxe.php` | 80 | nej |
 | `/esxi/<ver>/*` | statisk | 80 | nej |
 | `/ks.cfg?mac=` | `www/generate_kickstart.php` | 80 | nej |
+| `/progress.php?mac=&step=` | `www/progress.php` | 80 | nej |
 | `/admin/deployment_complete.php?mac=` | `www/deployment_complete.php` | 80 | nej |
 | `/admin/` | `www/admin_dashboard.php` | **443** | session + CSRF |
 
@@ -117,9 +165,37 @@ VLAN.
 | iPXE laddas om och om igen | `iPXE`-klassen testas inte först → loop |
 | "Could not reach the deployment server" | `next-server` fel, eller nginx nere |
 | Installer startar men hittar inga moduler | `esxi/<ver>/boot.cfg` saknas eller har fel `modules=` |
-| Hosten fastnar i väntloop | status ≠ approved i `hosts.json`; `logs/ipxe_boot.log` |
+| Hosten fastnar i väntloop | status ≠ approved i inventariet; `logs/ipxe_boot.log` |
 | Kickstart avbryts direkt | hosten inte godkänd, eller `waiting_template_path` pekar fel |
 | Hosten blir aldrig `deployed` | `%firstboot`-callbacken; `logs/deployment.log` |
+
+## Progress
+
+Bootkedjan rapporterar hur långt en host kommit. Procenten är checkpoints, inte
+ett mått på utfört arbete: klienten säger var den nådde, och tystnad mellan två
+checkpoints är diagnosen.
+
+| % | Rapporteras av | Betyder |
+|---|---|---|
+| 10 | `boot.ipxe.php` | bootscript utfärdat; hämtar kärna + ~110 moduler |
+| 50 | `generate_kickstart.php` | installern kör och har hämtat sin kickstart |
+| 75 | `progress.php?step=firstboot` | `%firstboot` har börjat |
+| 85 | `progress.php?step=network` | managementnätet konfigureras |
+| 90 | `progress.php?step=services` | tjänster konfigureras |
+| 100 | `deployment_complete.php` | klar |
+
+Värdet backar aldrig. En host som gör om ett steg, eller bootar om i en redan
+klar installation, ska inte se ut att tappa mark.
+
+Stegnamnen i `progress.php` matchas mot en fast tabell (`storeProgressSteps()`).
+En klient kan alltså inte skriva fri text i operatörens vy eller utropa sig
+själv som färdig — det beslutet ligger hos `deployment_complete.php`, som också
+slår på secure boot igen.
+
+Dashboarden pollar `www/host_status.php` var tredje sekund. Polling och inte
+SSE: php-fpm binder en worker per öppen SSE-anslutning, så tjugo operatörer som
+tittar på tjugo installationer hade tömt poolen och tagit ner bootkedjan med
+sig.
 
 Loggar: `logs/ipxe_boot.log`, `logs/kickstart_generator.log`,
 `logs/deployment.log`, `logs/admin_dashboard.log`, `logs/auth.log`.

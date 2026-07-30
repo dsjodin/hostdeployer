@@ -8,6 +8,8 @@ import sys
 
 import urllib3
 
+from autodeploy_api import ApiError, AutodeployApi
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # All paths derive from AUTODEPLOY_ROOT so the tree can be relocated.
@@ -15,7 +17,6 @@ AUTODEPLOY_ROOT = os.environ.get("AUTODEPLOY_ROOT", "/srv/autodeploy")
 CONFIG_DIR = os.path.join(AUTODEPLOY_ROOT, "config")
 LOG_DIR = os.path.join(AUTODEPLOY_ROOT, "logs")
 GLOBAL_CONFIG = os.path.join(CONFIG_DIR, "global_config.json")
-CREDENTIALS = os.path.join(CONFIG_DIR, "credentials.json")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - depends on the deployment host
     redfish = None
 
 _global_config = None
+_api = None
 
 def load_global_config():
     """Load (and cache) the global configuration file."""
@@ -52,76 +54,23 @@ def load_global_config():
 
     return _global_config
 
-def load_credentials():
-    """Load the iLO section of credentials.json."""
-    try:
-        with open(CREDENTIALS, "r") as f:
-            return json.load(f).get("ilo", {})
-    except Exception as e:
-        logger.error(f"Failed to load credentials from {CREDENTIALS}: {e}")
-        return {}
+def api():
+    """The shared API client, created on first use."""
+    global _api
+
+    if _api is None:
+        _api = AutodeployApi()
+
+    return _api
 
 
 def get_ilo_credentials(mac_address=None):
-    """Return (username, password), preferring host-specific overrides.
+    """Return (username, password), preferring host-specific overrides."""
+    creds = api().get_credentials("ilo", mac_address)
 
-    toggle_secure_boot() previously ignored the per-host credential block, so
-    servers with their own iLO account always failed to authenticate.
-    """
-    ilo_creds = load_credentials()
+    return creds.get("admin_user") or creds.get("username"), \
+        creds.get("admin_password") or creds.get("password")
 
-    username = ilo_creds.get("admin_user")
-    password = ilo_creds.get("admin_password")
-
-    if mac_address:
-        host_creds = ilo_creds.get("hosts", {}).get(format_mac(mac_address))
-        if host_creds:
-            username = host_creds.get("username", username)
-            password = host_creds.get("password", password)
-            logger.info(f"Using host-specific iLO credentials for {mac_address}")
-
-    return username, password
-
-def hosts_config_path():
-    """Absolute path to hosts.json."""
-    return load_global_config().get("paths", {}).get(
-        "hosts_config", os.path.join(CONFIG_DIR, "hosts.json")
-    )
-
-
-def load_hosts_config():
-    """Load the hosts configuration file"""
-    hosts_path = hosts_config_path()
-    
-    try:
-        if os.path.exists(hosts_path):
-            with open(hosts_path, "r") as f:
-                return json.load(f)
-        else:
-            logger.error(f"Hosts configuration file not found: {hosts_path}")
-            sys.exit(1)
-    except Exception as e:
-        logger.error(f"Failed to load hosts config: {e}")
-        sys.exit(1)
-
-def save_hosts_config(hosts_config):
-    """Write hosts.json atomically (write to a temp file, then rename)."""
-    hosts_path = hosts_config_path()
-    tmp_path = f"{hosts_path}.tmp.{os.getpid()}"
-
-    try:
-        with open(tmp_path, "w") as f:
-            json.dump(hosts_config, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.replace(tmp_path, hosts_path)
-        logger.info(f"Hosts configuration saved to {hosts_path}")
-    except Exception as e:
-        logger.error(f"Failed to save hosts config: {e}")
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        sys.exit(1)
 
 def format_mac(mac):
     """Format MAC address consistently"""
@@ -212,16 +161,14 @@ def update_secure_boot(ilo_ip, username, password, enable=True, reset=True):
                 logger.debug(f"Redfish logout for {ilo_ip} failed: {e}")
 
 def find_host_by_mac(mac):
-    """Find a host in the configuration by MAC address"""
-    hosts_config = load_hosts_config()
-    formatted_mac = format_mac(mac)
-    
-    for host in hosts_config.get("hosts", []):
-        if format_mac(host.get("mac_address", "")) == formatted_mac:
-            return host
-    
-    logger.error(f"Host with MAC {mac} not found in configuration")
-    return None
+    """Find a host in the inventory by MAC address."""
+    host = api().get_host(mac)
+
+    if host is None:
+        logger.error(f"Host with MAC {mac} not found in the inventory")
+
+    return host
+
 
 def toggle_secure_boot(mac, enable=True, reset=True):
     """Toggle secure boot for a host with the given MAC address"""
@@ -248,16 +195,10 @@ def toggle_secure_boot(mac, enable=True, reset=True):
     result = update_secure_boot(host["ilo_ip"], username, password, enable, reset=reset)
 
     if result:
-        # Update host status in configuration
-        hosts_config = load_hosts_config()
-        for h in hosts_config.get("hosts", []):
-            if format_mac(h.get("mac_address", "")) == format_mac(mac):
-                h["secure_boot_status"] = "enabled" if enable else "disabled"
-                break
-        
-        save_hosts_config(hosts_config)
-        logger.info(f"Updated secure boot status for host with MAC {mac} to {'enabled' if enable else 'disabled'}")
-    
+        status = "enabled" if enable else "disabled"
+        api().set_secure_boot_status(mac, status)
+        logger.info(f"Updated secure boot status for host with MAC {mac} to {status}")
+
     return result
 
 def main():
@@ -284,4 +225,8 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ApiError as e:
+        logger.error(str(e))
+        sys.exit(1)

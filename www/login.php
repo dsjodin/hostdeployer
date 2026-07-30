@@ -9,6 +9,10 @@ ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 ini_set('error_log', AUTODEPLOY_LOG_DIR . '/php_errors.log');
 
+// This page reads $_SESSION directly rather than through the auth helpers,
+// so it has to open the session itself.
+startAdminSession();
+
 // Already logged in?
 if (!empty($_SESSION['authenticated']) && $_SESSION['authenticated'] === true) {
     header('Location: admin_dashboard.php');

@@ -16,7 +16,7 @@ if (!defined('ADMIN_DASHBOARD')) {
  */
 function renderSettingsContent($globalConfig) {
   // Load credentials
-    $credentials = loadSecureCredentials();
+    $credentials = storeLoadCredentials();
     ?>
     <div class="row">
         <div class="col-12 mb-4">
@@ -354,6 +354,89 @@ function renderSettingsContent($globalConfig) {
                                             <i class="fas fa-save me-1"></i> Save Template Settings
                                         </button>
                                     </form>
+                                </div>
+                            </div>
+
+                            <?php
+                            // Uploading the media is the supported way to add a
+                            // version; the manual form below stays for a
+                            // directory that was placed on the server by hand.
+                            $extractor = imageAvailableExtractor();
+                            ?>
+                            <div class="card mb-4">
+                                <div class="card-header">
+                                    <h5 class="m-0 font-weight-bold text-primary">Upload ESXi Media</h5>
+                                </div>
+                                <div class="card-body">
+                                    <?php if ($extractor === null): ?>
+                                        <div class="alert alert-warning mb-0">
+                                            <strong>No extraction tool is installed.</strong>
+                                            Install one of
+                                            <code><?php echo h(implode('</code>, <code>', array_keys(imageExtractorCandidates()))); ?></code>
+                                            to upload ISOs here. Until then, extract the media on the server
+                                            and register the directory with the form below.
+                                        </div>
+                                    <?php else: ?>
+                                        <p class="card-text">
+                                            Upload an ESXi installer ISO. It is verified against the checksum you
+                                            supply, extracted, checked for a usable <code>boot.cfg</code> and
+                                            registered — replacing the mount, copy and hand-edit that this used
+                                            to take.
+                                        </p>
+
+                                        <form method="post" enctype="multipart/form-data">
+                                            <?php echo csrfField(); ?>
+                                            <input type="hidden" name="action" value="upload_esxi_image">
+
+                                            <div class="row">
+                                                <div class="col-md-3">
+                                                    <div class="mb-3">
+                                                        <label for="image_version" class="form-label">Version name:</label>
+                                                        <input type="text" class="form-control form-control-sm"
+                                                               id="image_version" name="version"
+                                                               pattern="[A-Za-z0-9._\-]+" required
+                                                               placeholder="8.0U3">
+                                                        <div class="form-text">Becomes a directory and a URL path.</div>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <div class="mb-3">
+                                                        <label for="image_description" class="form-label">Description:</label>
+                                                        <input type="text" class="form-control form-control-sm"
+                                                               id="image_description" name="description"
+                                                               placeholder="ESXi 8.0 Update 3">
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-5">
+                                                    <div class="mb-3">
+                                                        <label for="image_sha256" class="form-label">SHA-256 (recommended):</label>
+                                                        <input type="text" class="form-control form-control-sm"
+                                                               id="image_sha256" name="sha256"
+                                                               pattern="[0-9a-fA-F]{64}"
+                                                               placeholder="from the Broadcom download page">
+                                                        <div class="form-text">
+                                                            Left empty the image is installed unverified.
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="mb-3">
+                                                <label for="image_file" class="form-label">ISO file:</label>
+                                                <input type="file" class="form-control" id="image_file"
+                                                       name="image" accept=".iso,application/x-iso9660-image" required>
+                                                <div class="form-text">
+                                                    Several gigabytes; the upload and extraction take a few minutes.
+                                                    Extracting with <code><?php echo h($extractor); ?></code>.
+                                                </div>
+                                            </div>
+
+                                            <button type="submit" class="btn btn-primary"
+                                                    data-confirm="Uploading and extracting takes several minutes. Do not navigate away.">
+                                                <i class="fas fa-upload"></i> Upload and install
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
                                 </div>
                             </div>
 
@@ -739,8 +822,8 @@ function processSettingsActions($action, $postData) {
             $gateway     = trim((string)($postData['gateway'] ?? ''));
             $webserverIp = trim((string)($postData['webserver_ip'] ?? ''));
 
-            $dnsServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['dns_servers'] ?? ''))), 'strlen'));
-            $ntpServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['ntp_servers'] ?? ''))), 'strlen'));
+            $dnsServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['dns_servers'] ?? ''))), static fn($v) => $v !== ''));
+            $ntpServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['ntp_servers'] ?? ''))), static fn($v) => $v !== ''));
 
             $validationError = '';
 
@@ -905,6 +988,35 @@ function processSettingsActions($action, $postData) {
             }
             break;
             
+        case 'upload_esxi_image':
+            // The four manual steps this replaces -- mount, copy, unmount, edit
+            // global_config.json -- were unchecked, and a mistake in any of them
+            // surfaced as a host that boots the installer and finds no modules.
+            $upload = $_FILES['image'] ?? null;
+
+            if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                $code = is_array($upload) ? ($upload['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+                $result['error'] = in_array($code, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                    ? 'The ISO exceeds the upload limit. Raise upload_max_filesize and post_max_size '
+                        . 'in php.ini, and client_max_body_size in nginx.'
+                    : 'The upload did not arrive (error code ' . $code . ')';
+                break;
+            }
+
+            $install = imageInstall(
+                $upload['tmp_name'],
+                (string)($postData['version'] ?? ''),
+                (string)($postData['description'] ?? ''),
+                (string)($postData['sha256'] ?? '')
+            );
+
+            if ($install['success']) {
+                $result['message'] = $install['message'];
+            } else {
+                $result['error'] = $install['error'];
+            }
+            break;
+
         case 'save_esxi_versions':
             // Save ESXi version settings
             $globalConfig = loadJsonConfig($globalConfigPath);
@@ -981,7 +1093,7 @@ function processSettingsActions($action, $postData) {
             // Add to processSettingsActions in settings.php
         case 'save_default_credentials':
             // Load existing credentials
-            $credentials = loadSecureCredentials();
+            $credentials = storeLoadCredentials();
             if (!$credentials) {
                 $credentials = [
                     'ilo' => ['hosts' => []],
@@ -1012,7 +1124,7 @@ function processSettingsActions($action, $postData) {
             }
 
             // Save updated credentials (atomically, mode 0640)
-            $savedOk = saveSecureCredentials($credentials);
+            $savedOk = storeSaveCredentials($credentials);
 
             if ($savedOk) {
                 $result['message'] = "Default credentials updated successfully";

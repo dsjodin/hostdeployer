@@ -123,15 +123,18 @@ function getTemplateFiles($templatesDir) {
     $templates = [];
     
     if (is_dir($templatesDir)) {
-        $files = glob("$templatesDir/*.cfg");
+        $files = glob("$templatesDir/*.cfg") ?: [];
         
         foreach ($files as $file) {
             $filename = basename($file);
-            $modTime = filemtime($file);
-            $size = filesize($file);
+            // Both return false if the file went away between the glob and
+            // the stat. Treat that as zero rather than letting false reach
+            // date() and formatFileSize().
+            $modTime = filemtime($file) ?: 0;
+            $size = filesize($file) ?: 0;
             
             // Check if there are backup versions
-            $backups = glob("$templatesDir/backups/$filename.*");
+            $backups = glob("$templatesDir/backups/$filename.*") ?: [];
             
             // Get template type based on filename
             $type = 'Unknown';
@@ -176,11 +179,15 @@ function getTemplateFiles($templatesDir) {
 
 /**
  * Format file size in human-readable format
- * 
+ *
+ * The return type is declared natively rather than only in the docblock: PHP
+ * enforces one and not the other, and without it every array this value lands
+ * in becomes unresolvable to a caller trying to reason about the shape.
+ *
  * @param int $bytes Size in bytes
  * @return string Formatted size
  */
-function formatFileSize($bytes) {
+function formatFileSize($bytes): string {
     $units = ['B', 'KB', 'MB', 'GB', 'TB'];
     $i = 0;
     
@@ -256,7 +263,7 @@ function getTemplateBackups($templatePath) {
     $backups = [];
     
     if (is_dir($backupDir)) {
-        $files = glob("$backupDir/$filename.*");
+        $files = glob("$backupDir/$filename.*") ?: [];
         
         foreach ($files as $file) {
             $backupFile = basename($file);
