@@ -91,7 +91,7 @@ function apiBody() {
  * @param mixed                                   $body   Payload to return on success
  */
 function apiRespondToActionResult(array $result, $body = null) {
-    $error = $result['error'] ?? '';
+    $error = $result['error'];
 
     if ($error !== '') {
         $status = stripos($error, 'not found') !== false ? 404 : 400;
@@ -139,7 +139,7 @@ if ($path === '') {
 }
 // Tolerate a front end that passes the prefix along with the route.
 $path = preg_replace('#^/api(?=/|$)#', '', $path) ?? '';
-$segments = array_values(array_filter(explode('/', trim($path, '/')), 'strlen'));
+$segments = array_values(array_filter(explode('/', trim($path, '/')), static fn($s) => $s !== ''));
 
 // Everything lives under /v1 so a future shape change has somewhere to go.
 if (($segments[0] ?? '') !== 'v1') {
@@ -220,7 +220,7 @@ function apiHandleHosts($method, array $rest) {
             apiRequire('write');
             $body = apiBody();
             $result = processAddHostAction($body);
-            if (($result['error'] ?? '') === '') {
+            if ($result['error'] === '') {
                 apiLog("Token '{$identity['name']}' created host " . formatMac($body['mac'] ?? ''));
             }
             apiRespondToActionResult($result, null);
@@ -287,7 +287,7 @@ function apiHandleHosts($method, array $rest) {
             case 'DELETE':
                 apiRequire('write');
                 $result = processDeleteHostAction(['mac' => $mac]);
-                if (($result['error'] ?? '') === '') {
+                if ($result['error'] === '') {
                     apiLog("Token '{$identity['name']}' deleted host $mac");
                 }
                 apiRespondToActionResult($result);
@@ -361,7 +361,7 @@ function apiHandleHosts($method, array $rest) {
                 apiError('Host not found', 404);
             }
             $result = processApproveHostAction(apiApprovalPayload($mac, $existing, apiBody()));
-            if (($result['error'] ?? '') === '') {
+            if ($result['error'] === '') {
                 apiLog("Token '{$identity['name']}' approved host $mac");
             }
             apiRespondToActionResult($result);
@@ -370,7 +370,7 @@ function apiHandleHosts($method, array $rest) {
         case 'reinstall':
             apiRequire('approve');
             $result = processReinstallHostAction(['mac' => $mac]);
-            if (($result['error'] ?? '') === '') {
+            if ($result['error'] === '') {
                 apiLog("Token '{$identity['name']}' queued host $mac for reinstallation");
             }
             apiRespondToActionResult($result);

@@ -57,7 +57,7 @@ if (!function_exists('parseBootCfg')) {
                     break;
                 case 'modules':
                     $result['modules'] = array_values(
-                        array_filter(array_map('trim', explode('---', $value)), 'strlen')
+                        array_filter(array_map('trim', explode('---', $value)), static fn($m) => $m !== '')
                     );
                     break;
                 case 'prefix':
@@ -82,7 +82,7 @@ if (!function_exists('bootCfgIsUsable')) {
      * @return bool True when the file names both a kernel and at least one module
      */
     function bootCfgIsUsable(array $parsed) {
-        return ($parsed['kernel'] ?? '') !== '' && !empty($parsed['modules']);
+        return $parsed['kernel'] !== '' && $parsed['modules'] !== [];
     }
 }
 

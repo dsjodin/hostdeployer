@@ -225,4 +225,8 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ApiError as e:
+        logger.error(str(e))
+        sys.exit(1)

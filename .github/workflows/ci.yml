@@ -1,16 +1,21 @@
 name: ci
 
 on:
+  # Only the default branch on push. Everything else arrives as a pull
+  # request, and running both events doubles every check on a PR branch.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  php:
-    name: php
+  # The application targets PHP 8.1. Linting on the lowest supported version
+  # is the point of this job: syntax that only parses on 8.4 would otherwise
+  # reach a server running the version the README asks for.
+  php-syntax:
+    name: php-syntax
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,13 +26,26 @@ jobs:
           extensions: sodium, pdo_sqlite
           coverage: none
 
-      # The application targets PHP 8.1 and up. Linting on the lowest
-      # supported version is the point: syntax that only parses on 8.4 would
-      # otherwise reach a server running the version the README asks for.
       - name: syntax
         run: |
           find lib www scripts tests -name '*.php' -print0 \
             | xargs -0 -n1 -P4 php -l > /dev/null
+
+  # The test tooling is a development dependency and does not have to run on
+  # the version the appliance runs on: PHPUnit 11 requires PHP 8.2, and
+  # holding the whole suite back to 8.1 to match would be the tail wagging the
+  # dog. What the application supports is checked by php-syntax above.
+  php-test:
+    name: php-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: sodium, pdo_sqlite
+          coverage: none
 
       - uses: ramsey/composer-install@v3
 
@@ -84,7 +102,17 @@ jobs:
         run: |
           status=0
           for tpl in templates/*.cfg; do
-            for token in $(grep -o '{{[A-Z0-9_]*}}' "$tpl" | tr -d '{}' | sort -u); do
+            # Comment lines are excluded: the templates document their own
+            # {{TOKEN}} syntax in a header, and that is not a variable.
+            # ENDIF and ELSE are control directives handled by
+            # processConditionals(), not values the generator supplies.
+            tokens=$(grep -v '^[[:space:]]*#' "$tpl" \
+              | grep -o '{{[A-Z0-9_]*}}' \
+              | tr -d '{}' \
+              | grep -Ev '^(ENDIF|ELSE)$' \
+              | sort -u)
+
+            for token in $tokens; do
               grep -q "'$token'" www/generate_kickstart.php \
                 || { echo "::error file=$tpl::{{$token}} is not set by generate_kickstart.php"; status=1; }
             done

@@ -59,8 +59,17 @@ function secretsKey() {
             throw new SecretsException('Could not read ' . AUTODEPLOY_SECRET_KEY_FILE);
         }
 
-        $raw = @sodium_hex2bin(trim($hex));
-        if ($raw === false || strlen($raw) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES) {
+        // sodium_hex2bin() throws on a non-hex string rather than returning
+        // false, so the obvious "=== false" check never fires: a corrupted key
+        // file produced an uncaught SodiumException instead of the message
+        // below, which is the one case this whole branch exists for.
+        try {
+            $raw = sodium_hex2bin(trim($hex));
+        } catch (SodiumException $e) {
+            $raw = '';
+        }
+
+        if ($raw === '' || strlen($raw) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES) {
             // Refuse rather than generate a replacement: a truncated key file
             // is recoverable from a backup, and quietly minting a new one
             // would make every stored password permanently undecryptable.

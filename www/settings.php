@@ -822,8 +822,8 @@ function processSettingsActions($action, $postData) {
             $gateway     = trim((string)($postData['gateway'] ?? ''));
             $webserverIp = trim((string)($postData['webserver_ip'] ?? ''));
 
-            $dnsServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['dns_servers'] ?? ''))), 'strlen'));
-            $ntpServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['ntp_servers'] ?? ''))), 'strlen'));
+            $dnsServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['dns_servers'] ?? ''))), static fn($v) => $v !== ''));
+            $ntpServers = array_values(array_filter(array_map('trim', explode(',', (string)($postData['ntp_servers'] ?? ''))), static fn($v) => $v !== ''));
 
             $validationError = '';
 

@@ -94,10 +94,12 @@ def check_host_reachable(ip):
         result = subprocess.run(
             ["ping", "-c", "1", "-W", "1", ip],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
+            # A host that does not answer is the expected case, not an error.
+            check=False,
         )
         return result.returncode == 0
-    except:
+    except OSError:
         return False
 
 def test_ilo_auth(ip, username, password):
@@ -273,11 +275,10 @@ def detect_secure_boot_status(ip, username, password):
             )
             
             if registry_response.status_code == 200:
-                registry_data = registry_response.json()
-                logger.info(f"Found registry resource at {ip}")
-                
-                # This is a more complex search that would require additional parsing
-                # Just log that we found it for potential future enhancements
+                # Only noted, not parsed: the registry would have to be walked
+                # to resolve attribute names, and every iLO seen so far reports
+                # secure boot through the paths tried above.
+                logger.debug(f"Registry resource present at {ip}, not parsed")
         except Exception as e:
             logger.warning(f"Error checking Registry resource at {ip}: {e}")
     

@@ -1,10 +1,14 @@
 parameters:
     level: 5
 
+    # Deliberately not tests/. Those are verified by being run, which is
+    # stronger than being analysed: a test that type-checks and asserts the
+    # wrong thing still passes PHPStan. Static analysis earns its place on the
+    # code CI never executes -- the admin UI, the boot endpoints, the parts
+    # reached only by a firmware loader or a browser.
     paths:
         - lib
         - www
-        - tests
 
     # The tab files under www/ are included into admin_dashboard.php rather
     # than being entry points of their own, so every symbol they use is in
@@ -14,13 +18,19 @@ parameters:
         - lib/utils.php
         - lib/auth.php
         - lib/bootcfg.php
+        - lib/store.php
+        - lib/secrets.php
+        - lib/images.php
+        - lib/db.php
+        - lib/api_auth.php
 
     scanDirectories:
         - www
 
-    # The live configuration files are not in git (they hold credentials), so
-    # the constants they define cannot be resolved from a clean checkout.
-    ignoreErrors:
-        # Bootstrap-guarded helpers are declared inside if (!function_exists())
-        # blocks, which PHPStan reads as conditionally defined.
-        - identifier: function.inner
+    # PHP does not enforce PHPDoc, and almost nothing here has parameter type
+    # declarations. A function documented as taking an array is still called
+    # with whatever a request body decoded to, so the is_array() checks that
+    # PHPStan reads as redundant are the only thing actually guarding those
+    # boundaries. Trusting the docblocks would mean deleting the checks that
+    # make the docblocks true.
+    treatPhpDocTypesAsCertain: false

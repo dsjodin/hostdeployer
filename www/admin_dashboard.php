@@ -164,7 +164,6 @@ if ($error !== '') {
     renderAlert($error, 'danger');
 }
 
-renderTabsNav($activeTab);
 
 switch ($activeTab) {
     case 'hosts':
