@@ -290,6 +290,97 @@ redan bevaras.
 
 ---
 
+## 5b. Kea svarar på **all** DHCP i broadcastdomänen — läs det här först
+
+`deploy/kea-config.sh:166-186`
+
+```json
+"subnet4": [
+    {
+        "id": 1,
+        "subnet": "$SUBNET",
+        "pools": [ { "pool": "$POOL" } ],
+        "next-server": "$SERVER_IP",
+        "option-data": [ ... ],
+        "reservations": [ ]
+    }
+]
+```
+
+Det finns ingen `client-class` på subnätet. De tre klasserna ovanför —
+`iPXE`, `UEFI-HTTP`, `UEFI-PXE` — sätter bara `boot-file-name` och
+`next-server` **för klienter som redan fått en lease**. De avgör inte *vem* som
+får en.
+
+Konsekvensen: Kea besvarar varje DHCPDISCOVER som når interfacet. Laptops,
+skrivare, virtuella maskiner, allt. På ett dedikerat provisioneringsnät är det
+avsikten. På ett nät som redan har en DHCP-server är det en rogue DHCP-server som
+tävlar med den befintliga — den som svarar först vinner, och klienten får
+`routers` och `domain-name-servers` ur *den här* konfigurationen.
+
+Det är särskilt lätt att hamna där eftersom `install.sh` föreslår
+deploy-serverns eget interface och egen adress som default. Kör man igenom
+frågorna med enter hamnar DHCP:n på samma nät som maskinen administreras från.
+
+### Åtgärd i `deploy/kea-config.sh`
+
+Lägg till en klass som är unionen av de tre bootklasserna, och bind subnätet till
+den. Klasser evalueras i definitionsordning, så den måste stå **sist** i
+`client-classes`:
+
+```json
+{
+    // Unionen av bootgrenarna. Subnätet nedan är bundet till den här
+    // klassen, så en maskin som inte nätbootar får ingen lease alls.
+    // Utan det svarar Kea på varje DHCPDISCOVER i broadcastdomänen, vilket
+    // på ett delat nät gör den till en rogue DHCP-server.
+    "name": "PXE-CLIENTS",
+    "test": "member('iPXE') or member('UEFI-HTTP') or member('UEFI-PXE')"
+}
+```
+
+```json
+"subnet4": [
+    {
+        "id": 1,
+        "subnet": "$SUBNET",
+        "client-class": "PXE-CLIENTS",
+        ...
+    }
+]
+```
+
+ESXi-hostarna får statiska adresser vid godkännandet (`management_ip`), så de
+behöver leasen bara under installationen. Ingenting i kedjan tappar något på
+restriktionen.
+
+`lib/kea.php:277-284` bygger om `subnet4[0]` från grunden när DHCP ändras från
+admin-UI:t och bevarar idag bara `id` och `reservations`. `client-class` måste
+läggas till i den listan, annars försvinner skyddet vid första
+nätverksändringen — samma sak som gäller `relay` i §5.
+
+### Om du ändå måste dela nät med en befintlig DHCP-server
+
+Restriktionen ovan minskar risken men tar inte bort den: två DHCP-servrar i samma
+broadcastdomän är fortfarande en tävling, och en annan maskin som råkar nätboota
+på det nätet kommer att få hostdeployers svar. Rätt lösning är ett eget VLAN för
+provisionering — det är hela poängen med uppdelningen som resten av det här
+dokumentet beskriver.
+
+Innan du startar Kea på ett delat nät, kontrollera åtminstone att poolen inte
+överlappar den befintliga serverns:
+
+```bash
+# Vilken server gav den här maskinen sin adress?
+journalctl -u NetworkManager --no-pager | grep -i dhcp | tail
+grep -r . /var/lib/dhcp/ 2>/dev/null | tail
+
+# Svarar någon annan redan på nätet?
+sudo nmap --script broadcast-dhcp-discover
+```
+
+---
+
 ## 6. vSphere-sidan
 
 ### Ett vNIC med flera VLAN (VGT) — det du beskriver

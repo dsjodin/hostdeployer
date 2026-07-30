@@ -206,6 +206,74 @@ sudo -u www-data php -r "putenv('AUTODEPLOY_ROOT=/srv/autodeploy');
 
 ---
 
+## 3b. `error: PHP 8.4 is missing the mbstring extension`
+
+`install.sh:331-333`
+
+```bash
+for ext in pdo_sqlite curl mbstring; do
+    "php${PHP_VERSION}" -m 2>/dev/null | grep -qx "$ext" || die "PHP $PHP_VERSION is missing the $ext extension"
+done
+```
+
+### Kontrollen är för sträng
+
+**`mbstring` används inte någonstans i trädet.** Ingen `mb_*`-funktion finns i
+`lib/`, `www/`, `scripts/` eller `tests/`. Detsamma gäller `php-xml`, som står i
+`PACKAGES` men vars `DOMDocument`/`SimpleXML` inte anropas någonstans. All
+strängbehandling går genom `preg_*`, `str_*` och `htmlspecialchars(…, 'UTF-8')`,
+som alla ligger i `pcre`/`Core`/`standard`.
+
+De tre tillägg som faktiskt krävs är:
+
+| Tillägg | Används av |
+|---|---|
+| `sodium` | `lib/secrets.php` — XChaCha20-Poly1305 |
+| `pdo_sqlite` | `lib/db.php` — hela inventariet |
+| `curl` | reserverad för utgående anrop; inget i trädet anropar den idag heller |
+
+### Åtgärd i koden
+
+```bash
+# mbstring och xml stod i listan utan att användas. Kravlistan ska vara
+# det applikationen faktiskt laddar, annars stoppas en installation av ett
+# tillägg ingen kod anropar.
+for ext in pdo_sqlite; do
+    "php${PHP_VERSION}" -m 2>/dev/null | grep -qx "$ext" \
+        || die "PHP $PHP_VERSION is missing the $ext extension.
+     Install it with: apt install php${PHP_VERSION}-sqlite3"
+done
+```
+
+Notera också att meddelandet idag inte säger vad man ska göra. Sodium-kontrollen
+strax ovanför gör det — den namnger paketet och förklarar varför det inte går att
+fortsätta utan. Varje `die` i skriptet bör hålla den standarden; en avbruten
+installation som inte säger nästa steg kostar mer än raden den sparade.
+
+Ta samtidigt bort `php${PHP_VERSION}-mbstring` och `-xml` ur `PACKAGES`
+(`install.sh:302`), eller behåll dem med en kommentar om vad de är avsedda för.
+
+### Så tar du dig förbi den nu
+
+```bash
+# Är paketet installerat?
+dpkg -l | grep php8.4-mbstring
+
+# Om ja: det är installerat men inte aktiverat för CLI-SAPI:n
+sudo phpenmod -v 8.4 mbstring && sudo systemctl restart php8.4-fpm
+
+# Om nej:
+sudo apt install php8.4-mbstring
+
+# Kontrollera:
+php8.4 -m | grep -x mbstring
+```
+
+`--skip-packages` hoppar över apt men **inte** över extensionskontrollerna, vilket
+i sig är rätt — men det gör att flaggan inte hjälper mot just det här felet.
+
+---
+
 ## 4. Mindre fel i samma skript
 
 Alla nedan är samma sorts problem som avsnitt 1: `set -e` plus ett kommando som
