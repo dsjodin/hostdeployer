@@ -91,7 +91,10 @@ function apiBody() {
  * @param mixed                                   $body   Payload to return on success
  */
 function apiRespondToActionResult(array $result, $body = null) {
-    $error = $result['error'];
+    // Coalesced: the docblock types both keys as optional, and a handler that
+    // returns early without setting 'error' would otherwise raise a warning and
+    // compare null against '' -- reporting success as a 400 with no message.
+    $error = (string)($result['error'] ?? '');
 
     if ($error !== '') {
         $status = stripos($error, 'not found') !== false ? 404 : 400;
@@ -521,6 +524,14 @@ function apiHandleImages($method, array $rest) {
             $upload = $_FILES['image'] ?? null;
             if (!is_array($upload) || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
                 apiError('Expected a multipart upload in the "image" field: ' . apiUploadError($upload), 400);
+            }
+
+            // What makes "tmp_name cannot be steered" verifiable rather than
+            // merely true. The template upload has always checked it; this path
+            // hands the same value to imageInstall(), which hashes it, extracts
+            // it and copies gigabytes out of it.
+            if (!is_uploaded_file($upload['tmp_name'])) {
+                apiError('Not an uploaded file', 400);
             }
 
             $version = (string)($_POST['version'] ?? '');

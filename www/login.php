@@ -31,7 +31,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     $attempts = (int)($_SESSION['login_attempts'] ?? 0);
     $lockedUntil = (int)($_SESSION['login_locked_until'] ?? 0);
 
-    if ($lockedUntil > time()) {
+    // The form has always rendered csrfField() and nothing ever checked what
+    // came back. A login form that does not verify its token can be submitted
+    // from any page the operator happens to visit, which signs their browser
+    // into an account the attacker controls -- and everything approved,
+    // uploaded or typed afterwards happens inside a session someone else
+    // opened. The dashboard has verified this since it was written; the login
+    // page was the one POST in the tree that did not.
+    if (!verifyCsrfToken($_POST)) {
+        auth_log("Login attempt with a missing or invalid CSRF token from $clientIp", 'WARNING');
+        $error = 'Your session could not be verified. Please try again.';
+    } elseif ($lockedUntil > time()) {
         $wait = $lockedUntil - time();
         $error = "Too many failed login attempts. Please wait {$wait} seconds and try again.";
         auth_log("Login attempt while throttled for user '$username' from $clientIp", 'WARNING');

@@ -20,6 +20,16 @@ if ($user === null) {
     exit('Authentication required. Please log in to the admin dashboard first.');
 }
 
+// Being logged in was the whole check, so any role could read every file under
+// logs/ -- including auth.log, which records usernames, source addresses and
+// every failed login, and api.log, which records which token did what.
+// host_status.php gates far less than this on 'read'; this gated nothing.
+if (!hasPermission('read')) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Insufficient permissions');
+}
+
 header('Content-Type: text/plain; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-store');
