@@ -1003,10 +1003,19 @@ step "Verifying"
 FAILED=0
 check() {
     local label="$1"; shift
-    if "$@" >/dev/null 2>&1; then
+    local output
+
+    if output="$("$@" 2>&1)"; then
         printf '    %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$label"
     else
         printf '    %s[fail]%s %s\n' "$C_ERR" "$C_OFF" "$label"
+        # The reason, not just the verdict. These checks capture an error the
+        # moment it happens and used to throw it away, sending the operator to
+        # journalctl for something the check already knew -- and in the case of
+        # the Kea socket, something journalctl does not record at all.
+        if [ -n "$output" ]; then
+            printf '%s\n' "$output" | head -4 | sed "s/^/           $C_DIM/;s/\$/$C_OFF/"
+        fi
         FAILED=1
     fi
 }
@@ -1040,7 +1049,14 @@ check "the stored ESXi password decrypts" sudo -u www-data "php${PHP_VERSION}" -
 check "the dashboard answers on 443"    curl -skf -o /dev/null "https://127.0.0.1/admin/login.php"
 check "the boot chain answers on 80"    bash -c "curl -sf -o /dev/null -w '%{http_code}' 'http://127.0.0.1/boot.ipxe.php?mac=00:00:00:00:00:01' | grep -q 200"
 check "the API rejects an unauthenticated call" bash -c "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/hosts | grep -q 401"
-check "the admin UI can reach Kea's control socket" sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/kea.php'; exit(keaStatus()['available'] ? 0 : 1);"
+# keaStatus() never throws -- it is written to render a page -- so it reports
+# the reason in ['error'] instead. Passing that on is the difference between
+# "the socket is not there" and "the web server may not write to it", which
+# have different fixes and are otherwise indistinguishable from a [fail].
+check "the admin UI can reach Kea's control socket" \
+    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/kea.php';
+        \$status = keaStatus();
+        if (!\$status['available']) { fwrite(STDERR, \$status['error'] . PHP_EOL); exit(1); }"
 
 chown -R www-data:www-data "$ROOT/logs"
 
