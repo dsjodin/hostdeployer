@@ -373,6 +373,19 @@ install -d -m 0750 -o root -g www-data "$ROOT"
 
 # vendor/ and tests/ are development-only; .git has no business on an
 # appliance. config/ is excluded so a re-run never overwrites live secrets.
+# --delete removes anything under $ROOT that is not in the checkout, which is
+# what keeps an upgrade from leaving a deleted file behind. Everything the
+# appliance creates after installation therefore has to be excluded, or a
+# re-run destroys it:
+#
+#   venv/      built by the Python step further down. Not excluded, rsync tried
+#              to delete it on every re-run, printed a page of "cannot delete
+#              non-empty directory", and left a half-removed virtualenv behind.
+#   templates/ the kickstart templates are edited and uploaded through the
+#              admin UI. Copying the shipped ones over them reverted an
+#              operator's edits, and --delete removed every template they had
+#              uploaded along with the backups the UI made before each save.
+#              Seeded below instead, without overwriting.
 rsync -a --delete \
     --exclude '.git' \
     --exclude '.github' \
@@ -380,6 +393,8 @@ rsync -a --delete \
     --exclude 'tests' \
     --exclude 'logs' \
     --exclude 'config' \
+    --exclude 'venv' \
+    --exclude 'templates' \
     --exclude 'esxi/*/' \
     "$SRC"/ "$ROOT"/
 
@@ -400,15 +415,39 @@ rsync -a --delete \
 install -d -m 3770 -o root    -g www-data "$ROOT/config"
 install -d -m 0750 -o www-data -g www-data "$ROOT/logs"
 install -d -m 0755 -o root    -g www-data "$ROOT/esxi"
-install -d -m 0750 -o www-data -g www-data "$ROOT/templates/backups"
+install -d -m 2770 -o root    -g www-data "$ROOT/templates"
+install -d -m 2770 -o root    -g www-data "$ROOT/templates/backups"
 install -d -m 0755 -o root    -g www-data "$ROOT/ipxe"
 
-# The templates directory is edited through the admin UI.
-chown -R root:www-data "$ROOT/templates"
-chmod 0770 "$ROOT/templates"
+# Seeded, not synchronised. The admin UI edits these files, uploads new ones
+# and keeps a backup before every save, so the shipped copies are a starting
+# point rather than the truth: an existing file is left exactly as it is, and
+# what an operator added is never touched.
+#
+# setgid on the directories above is what keeps that working -- a template
+# uploaded by the web server lands in the www-data group, which is what the
+# 0660 below assumes.
+seeded=0
+kept=0
+for template in "$SRC"/templates/*.cfg; do
+    [ -f "$template" ] || continue
+
+    target="$ROOT/templates/$(basename "$template")"
+    if [ -e "$target" ]; then
+        kept=$((kept + 1))
+    else
+        install -m 0660 -o root -g www-data "$template" "$target"
+        seeded=$((seeded + 1))
+    fi
+done
+
+# Modes only, no ownership: a template the web server uploaded is owned by
+# www-data, and taking that away would stop it being editable through the UI
+# that created it.
+chmod 2770 "$ROOT/templates" "$ROOT/templates/backups"
 find "$ROOT/templates" -type f -exec chmod 0660 {} +
 
-info "tree installed, logs and templates writable by www-data"
+info "tree installed; templates: $seeded seeded, $kept kept as they are"
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -909,17 +948,36 @@ fi
 # An if rather than "|| { retry; die; }": a brace group after the final || is
 # not exempt from set -e, so the retry that exists to show the error killed the
 # script before die() could explain what the error meant.
-if ! kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1; then
+# Validated as the service user, not as root. Debian confines kea-dhcp4 with an
+# AppArmor profile that denies dac_read_search and dac_override, and /etc/kea is
+# not traversable by uid 0 on its own permissions -- root normally gets there
+# through exactly those capabilities. So a syntax check run as root fails on
+# every file in that directory, including the one the package shipped, with
+# "Unable to open file": a message that reads like the file is missing when in
+# fact it was never opened.
+#
+# systemd starts the daemon as $KEA_USER, which owns the directory and needs no
+# bypass. Checking as that user is both what works and what the check is
+# actually meant to assert -- that the service can read what we just wrote.
+kea_check() {
+    if [ "$KEA_USER" != root ] && command -v runuser >/dev/null 2>&1; then
+        runuser -u "$KEA_USER" -- kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+    else
+        kea-dhcp4 -t /etc/kea/kea-dhcp4.conf
+    fi
+}
+
+if ! kea_check >/dev/null 2>&1; then
     printf '\n'
-    kea-dhcp4 -t /etc/kea/kea-dhcp4.conf || true
+    kea_check || true
     die "Kea rejected /etc/kea/kea-dhcp4.conf.
 
-     'Unable to open file' means Kea could not read it at all rather than that
-     the contents are wrong. Check, in this order:
-       ls -l /etc/kea/kea-dhcp4.conf          exists, non-empty, mode 0644?
-       aa-status | grep -i kea                confined by AppArmor?
-       journalctl -t audit --since -5min | grep -i kea    denied?
-     Otherwise the parse error above names the line."
+     'Unable to open file' means Kea never opened it, rather than that the
+     contents are wrong -- so look at access, not at JSON:
+       ls -ld /etc/kea                          traversable by $KEA_USER?
+       ls -l  /etc/kea/kea-dhcp4.conf           readable by $KEA_USER?
+       dmesg | grep -i 'apparmor.*kea' | tail   denied, and which operation?
+     Any other message is a parse error and names the line."
 fi
 
 systemctl enable --now kea-dhcp4-server >/dev/null 2>&1 || true
