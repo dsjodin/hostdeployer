@@ -132,6 +132,79 @@ invävt i resten. Men två saker ändras:
 
 ---
 
+## 2c. Blir Web UI:t lidande av en Go-monolit?
+
+En rimlig oro, men premissen håller inte för den här kodbasen: **UI:t ligger
+inte i monoliten.**
+
+`ui/` är ett fristående Next.js-projekt på 1 723 rader med tre
+runtime-beroenden (`next`, `react`, `react-dom`). All serverkontakt går genom
+en enda wrapper — `ui/src/lib/api.js`, ett `fetch(\`/v1${path}\`)`. Ingen
+Go-kod känner till UI:t; inget i UI:t känner till Go. `go:embed` sker vid
+*build* (`webui/embed.go`), inte vid utveckling: `next dev` körs mot API:t med
+hot reload, och binären är inte i loopen.
+
+Kopplingen är alltså lösare än i hostdeployer, där render och logik är
+sammanvuxna:
+
+| | rader | innehåll |
+|---|---|---|
+| `www/hosts.php` | 707 | en `renderHostsContent()` som emitterar HTML, med inline `<script>` från rad 651 |
+| `www/templates.php` | 1 772 | sökvägsvalidering + fil-I/O + backup-logik + HTML + inline JS i samma fil |
+
+`docs/CODE-REVIEW.md` noterar det själv: *"templates.php är 1700 rader —
+render- och åtgärdslogiken bör delas upp."*
+
+**Men embed-modellen har verkliga friktioner:**
+
+1. **`output: "export"` är ett tak.** Statisk export betyder ingen SSR, inga
+   server actions, inga Next.js API-routes, ingen ISR.
+2. **Papperssnitten är av en särskild sort.** `http.FileServer` har ingen
+   `.html`-fallback, så en omladdning på annan sida än roten gav 404 tills
+   `trailingSlash: true` sattes — och klick-navigering dolde felet.
+3. **Två toolchains.** Node och Go i samma CI, plus en placeholder-`index.html`
+   incheckad enbart för att `go build` ska fungera utan Node.
+
+**Nödutgången:** embedding är ett paketeringsval, inte ett arkitekturkrav.
+Serveras UI:t separat blir binären rent API. Det kostar en-artefakt-egenskapen
+men är en öppen dörr, inte en återvändsgränd.
+
+---
+
+## 2d. Underhållsfrågan: vem patchar?
+
+Den tyngsta invändningen mot via_go, och den generaliserar 2b.
+
+`install.sh` installerar 15 paket som **någon annan underhåller**. Kea, nginx,
+tftpd-hpa och PHP-FPM får CVE-rättningar genom Debians säkerhetsuppdateringar
+utan att någon här behöver göra något. Det via_go implementerar själv får inga:
+
+| via_go implementerar själv | rader | vilar på |
+|---|---|---|
+| `internal/dhcp` | 637 | `mdlayher/raw` (deprecated, 2019), `gopacket` v1.1.19 |
+| `internal/tftp` | 232 | `pin/tftp` — pseudoversion från 2021, ingen tagg |
+| `internal/auth` | 449 | egen sessionshantering |
+| `internal/crypto` | 150 | egen CA- och certifikatgenerering |
+
+Det finns ingen `apt upgrade` som rättar en bugg i via_go:s TFTP-server.
+
+**`govulncheck: 0` är delvis en artefakt.** Verktyget rapporterar mot
+publicerade advisories. Mot övergivna bibliotek som ingen längre skriver
+advisories om finns inget att rapportera. Noll fynd är där frånvaro av
+bevakning, inte bevis på sundhet.
+
+**Vad som ändå står kvar.** Av hostdeployers fem tjänster utför bara två
+arbete. Kea och tftpd-hpa gör något; **nginx och PHP-FPM gör inget
+funktionellt** — de är driftskostnaden för att språket är PHP. Go:s
+HTTP-server sitter in-process på `gin`, som är underhållet och aktivt taggat.
+
+Jämförelsen är alltså inte 1:5. Med DHCP och TFTP delegerade blir den
+**binär + Kea + tftpd-hpa (3)** mot **nginx + PHP-FPM + Kea + tftpd-hpa (4)**,
+och skillnaden är precis PHP-runtimen. Det är en smal marginal, och den
+motiverar inte en port på egen hand.
+
+---
+
 ## 3. Bedömning
 
 ### Den avgörande asymmetrin
@@ -159,27 +232,47 @@ inte.** Det är hela argumentet i en mening.
 
 `install.sh` är 885 rader och installerar 15 paket, konfigurerar PHP-FPM,
 nginx med certifikat, Kea med control-agent, tftpd-hpa och en sudo-regel, och
-startar fem systemd-enheter. Varje uppgradering rör alla dessa. via_go:s
-motsvarighet är `scp` av en fil, eller `docker compose up`.
+startar fem systemd-enheter. via_go:s motsvarighet är `scp` av en fil, eller
+`docker compose up`.
 
 För en VIA — ett verktyg som ska kunna ställas ner i en kundmiljö, på ett
-jumphost, i ett labb — är det skillnaden mellan en produkt och en installation.
+jumphost, i ett labb — är färre rörliga delar vid utrullning en verklig fördel.
+
+**Men det är bara halva bilden.** Antalet tjänster mäter installationens
+komplexitet, inte förvaltningens. Där går pilen åt andra hållet: de 15 paketen
+patchas av Debian, medan varje rad i via_go är egen. Se avsnitt 2d — de två
+avsnitten ska läsas tillsammans, och de tar i stor utsträckning ut varandra.
 
 ### Kodbasernas mognad
 
-hostdeployer-repots historik börjar **2026-07-29** med "Add files via upload":
-ett internt verktyg som checkades in för två dagar sedan och sedan sanerades
-hårt. `docs/CODE-REVIEW.md` listar vad som hittades — godtycklig filskrivning
-→ RCE i `templates.php`, tre funktioner som anropades men aldrig definierades
-(hela Hardware Scan-fliken död), rotlösenord i klartext, race conditions.
-Allt är åtgärdat, men kodbasen har precis blivit trovärdig.
+**En rättelse.** En tidigare version av det här avsnittet läste hostdeployers
+git-historik — som börjar 2026-07-29 med "Add files via upload" — som att
+verktyget vore två dagar gammalt. Det är en ogiltig slutledning: incheckningen
+säger när koden lades på GitHub, ingenting om hur länge den utvecklats eller
+körts. hostdeployer kan ha gått i produktion i åratal. Argumentet är struket.
 
-via_go bär fem års uppströmshistorik med fältanvändning bakom sig, och gick
-igenom en jämförbar sanering (28 → 0 sårbarheter, 51 → 0 lint-fynd, SQL-
-injektion i sök, `UpdateUser` som förstörde lösenordshashen, DHCP-panik).
+Vad koden *faktiskt* bär bevis för är smalare, och gäller enskilda funktioner
+snarare än produkten. Ur `docs/CODE-REVIEW.md`:
 
-Båda är i dag rimligt trovärdiga. Skillnaden är hur mycket verklig drift
-koden bakom dem har sett.
+- **`processScanActions()` saknades helt.** Hela Hardware Scan-fliken gav
+  `Fatal error` och en vit sida. Den som använt fliken hade märkt det direkt.
+- **`admin_ui.php` laddade aldrig Bootstrap CSS**, trots att hela dashboarden
+  är byggd på Bootstrap 5-klasser. Syns vid första sidladdning.
+- **`generate_kickstart.php` hade grenarna i fel ordning**, så "väntar på
+  godkännande" var oåtkomlig — väntande servrar fick fel + `reboot` och
+  hamnade i en ominstallationsloop.
+
+Slutsatsen som håller är alltså inte "koden är omogen", utan: **de här
+funktionerna var bevisligen inte i bruk**. Kärnvägen — DHCP, boot, kickstart —
+kan mycket väl vara körd hårt i skarp drift; det finns inget i koden som säger
+emot det.
+
+via_go gick igenom en jämförbar sanering (28 → 0 sårbarheter, 51 → 0
+lint-fynd, SQL-injektion i sök, `UpdateUser` som förstörde lösenordshashen,
+DHCP-panik på blank gateway). Samma slag av fynd, i samma storleksordning.
+
+**Mognad är därmed inte en skiljelinje mellan repona**, och väger inte i
+rekommendationen. Det som väger är flyttkostnaden ovan.
 
 ### Vad som talar emot via_go
 
@@ -201,16 +294,38 @@ Var ärlig om detta — det är inte ett enkelriktat val:
 
 ## 4. Rekommendation
 
-**Satsa på `via_go`. Behåll hostdeployer som källa för tre saker och lägg ner
-den därefter.**
+**Svag preferens för `via_go` — men marginalen är smal, och avgörs inte av
+koden.**
 
-Motivering, kortast möjligt: via_go är redan en produkt — en binär, med
-API, UI, tester, CI, paketering och en uppström. hostdeployer är efter de
-senaste veckornas arbete en PHP-reimplementation av samma sak ovanpå en
-femtjänsters driftstack, och dess egna särdrag är de billigaste sakerna i
-hela jämförelsen att flytta.
+Första utkastet av den här analysen rekommenderade via_go tydligt, på tre
+argument: egen DHCP som styrka, en-binär-fördelen, och git-historiken som
+mognadsmått. Två av dem har fallit helt (2b, 3 *Kodbasernas mognad*) och det
+tredje har halverats (2d). Det vore oärligt att behålla slutsatsens ursprungliga
+säkerhet när underlaget krympt så mycket.
 
-### Föreslagen ordning
+**Vad som faktiskt återstår på vardera sidan:**
+
+| via_go | hostdeployer |
+|---|---|
+| Typsäkerhet, race-detektor, mätt täckning | Infrastrukturen underhålls av Debian (2d) |
+| Genererad OpenAPI-spec | Kea-integrationen fungerar redan |
+| Uppströmslänk till `maxiepax/go-via` | iLO/Redfish, Secure Boot, VCF-mall |
+| UI frikopplat från applikationen (2c) | Fri licens (proprietary) |
+| Färre rörliga delar vid utrullning | Ingen port behövs — arbetet är redan gjort |
+
+Den sista raden till höger väger tungt och saknades i första utkastet:
+**hostdeployer kräver ingen migration.** via_go-spåret kostar en DHCP-omskrivning
+plus tre portar innan det ens är i kapp.
+
+Argumentet som fortfarande håller för via_go är flyttkostnads-asymmetrin —
+hostdeployers särdrag är billiga att flytta, via_go:s är det inte. Men det är
+ett argument om *riktning*, inte om nödvändighet, och det räcker inte ensamt för
+att motivera att kasta bort ett fungerande system.
+
+**Det som avgör är inte koden**, utan vem som ska förvalta det här och vad de är
+bekväma att driva. Se avsnitt 5.
+
+### Föreslagen ordning (om via_go väljs)
 
 1. **Riv `internal/dhcp`, sätt Kea under istället.** Porta `lib/kea.php` till
    ett Go-paket som driver Kea:s control-socket (`config-set`,
@@ -241,10 +356,37 @@ anledning att hålla två träd vid liv.
 
 ---
 
-## 5. Det öppna beslutet: licensen
+## 5. De öppna besluten
 
-Licensfrågan är inte avgjord, och den är den enda som kan vända svaret. Därför
-står båda spåren beskrivna här.
+Två frågor avgör valet, och ingen av dem går att svara på ur koden.
+
+### 5.0 Vem förvaltar, och vad är de bekväma att driva?
+
+Den viktigaste, och den som avsnitt 2d gör oundviklig. De två repona optimerar
+för olika saker:
+
+- **hostdeployer: minimera vad du äger.** Delegera till underhållen
+  infrastruktur. Pris: fem tjänster att orkestrera, ett distroberoende, PHP.
+- **via_go: minimera vad du rullar ut.** Äg mer av stacken. Pris: du underhåller
+  en DHCP- och en TFTP-server själv.
+
+Är svaret "jag kör Debian, jag har `unattended-upgrades`, och jag litar mer på
+ISC:s DHCP-server än på min egen" — då är **hostdeployers arkitektur rätt**, och
+rekommendationen i avsnitt 4 ska vändas. Det är ett fullt försvarbart svar.
+
+Är svaret "jag vill ha en artefakt att rulla ut och en typad kodbas att ändra i
+utan att vara rädd" — då är via_go rätt.
+
+Den kompromiss som finns: kör via_go-spåret men ta 2d på allvar — delegera
+**både** DHCP och TFTP till Kea respektive tftpd-hpa. Då blir via_go
+"en Go-applikation ovanpå underhållen infrastruktur", vilket är hostdeployers
+filosofi med ett bättre applikationslager. Det är den enda varianten där båda
+invändningarna besvaras samtidigt.
+
+### 5.1 Licensen
+
+Licensfrågan är inte avgjord, och den kan ensam vända svaret. Därför står båda
+spåren beskrivna här.
 
 ### Spår A — internt eller öppet (GPL-3.0 är OK) → **via_go**
 
@@ -271,11 +413,20 @@ Då är via_go uteslutet som kodbas, och svaret blir det motsatta:
 
 ### Hur beslutet tas
 
-Frågan är inte teknisk. Den är: ska det här kunna säljas utan att källkoden
-följer med? Tills den är besvarad är det billigaste draget att **inte** börja
-porta något åt något håll — punkt 5 (engångstoken) och punkt 6 (verifiering
-mot ESXi 8/9 på nested VM:ar) är arbete som behövs i båda spåren och kan
-påbörjas direkt i vilket repo som helst.
+Ingen av de två frågorna är teknisk. Den ena är: ska det här kunna säljas utan
+att källkoden följer med? Den andra: vill den som förvaltar systemet äga en
+DHCP-server, eller delegera den?
+
+Tills båda är besvarade är det billigaste draget att **inte** börja porta något
+åt något håll. Två uppgifter behövs i båda spåren och kan påbörjas direkt i
+vilket repo som helst:
+
+- **Engångstoken i `ks=`-URL:en** — rotlösenordshashen delas i dag ut till vem
+  som helst som kan ta hostens IP på provisioneringsnätet. Gäller båda.
+- **Verifiering mot ESXi 8/9 på nested VM:ar**, en per bootväg. Ingen av dem är
+  körd mot riktig firmware.
+
+Det är också de två mest värdefulla sakerna att göra oavsett hur valet faller.
 
 ---
 
