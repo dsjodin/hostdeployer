@@ -2,6 +2,11 @@
 # Start from the matching *.example.* file.
 config/global_config.json
 config/hosts.json
+
+# The host inventory database (and its WAL sidecars)
+config/autodeploy.db
+config/autodeploy.db-wal
+config/autodeploy.db-shm
 config/credentials.json
 config/auth_config.php
 config/*.lock

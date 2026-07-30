@@ -12,8 +12,11 @@ final class StoreTest extends TestCase
 {
     protected function setUp(): void
     {
-        // A clean inventory per test: the fixture root is shared for the run.
-        file_put_contents(AUTODEPLOY_HOSTS_CONFIG, json_encode(['hosts' => []]));
+        // A clean inventory per test: the fixture root is shared for the run,
+        // and the connection is memoised, so the rows go rather than the file.
+        // host_macs follows by cascade.
+        db()->exec('DELETE FROM hosts');
+
         file_put_contents(AUTODEPLOY_CREDENTIALS, json_encode([
             'ilo'  => ['admin_user' => 'Administrator', 'admin_password' => 'global-ilo', 'hosts' => []],
             'esxi' => ['root_password' => 'global-esxi', 'hosts' => []],
@@ -22,9 +25,7 @@ final class StoreTest extends TestCase
 
     protected function tearDown(): void
     {
-        @unlink(AUTODEPLOY_HOSTS_CONFIG);
         @unlink(AUTODEPLOY_CREDENTIALS);
-        @unlink(AUTODEPLOY_HOSTS_CONFIG . '.lock');
         @unlink(AUTODEPLOY_CREDENTIALS . '.lock');
     }
 

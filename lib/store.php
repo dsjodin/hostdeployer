@@ -6,11 +6,11 @@
  * through this file. Nothing else should name AUTODEPLOY_HOSTS_CONFIG or
  * AUTODEPLOY_CREDENTIALS.
  *
- * That rule is the point of the module. The storage is a JSON file today and
- * SQLite next; encrypting the credentials at rest happens in
- * storeLoadCredentials() and storeSaveCredentials() and nowhere else. Both of
- * those are swaps behind this interface only for as long as the interface is
- * the only way in.
+ * That rule is what let the inventory move from a JSON file into SQLite, and
+ * the credentials become encrypted at rest, without touching a single caller.
+ * The hosts live in lib/db.php now; the credentials are still a file, because
+ * they are a small nested document an operator fills in by hand at install
+ * time and a database would take that away for no gain.
  *
  * lib/utils.php keeps the pure helpers -- formatMac(), findHostByMac() over a
  * config array, hostMatchesMac(). This file owns the I/O. The dependency runs
@@ -19,43 +19,275 @@
 
 require_once __DIR__ . '/utils.php';
 require_once __DIR__ . '/secrets.php';
+require_once __DIR__ . '/db.php';
 
 // ---------------------------------------------------------------------------
 // Hosts
 // ---------------------------------------------------------------------------
+//
+// The inventory lives in SQLite (lib/db.php), but the array shape below is the
+// one the rest of the application has always used, down to the nested "vlans"
+// and "datastore" keys and the "additional_macs" list. Callers were not
+// changed when the storage was: the mapping happens here.
 
-if (!function_exists('storeLoadHostsConfig')) {
+if (!function_exists('storeHostColumns')) {
     /**
-     * Load the whole hosts document.
+     * The host fields that have a column of their own.
      *
-     * Returns the {"hosts": [...]} envelope rather than a bare list because
-     * that is the shape findHostByMac() takes and the shape the admin
-     * dashboard iterates.
+     * Everything else a caller attaches to a record is preserved in the
+     * "extra" JSON column, so passing an unanticipated field through the store
+     * does not silently lose it.
      *
-     * @return array{hosts: array<int, array<string, mixed>>}|null Null when the file is unreadable
+     * @return string[]
      */
-    function storeLoadHostsConfig() {
-        $config = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
-        if ($config === null) {
+    function storeHostColumns() {
+        return [
+            'hostname', 'fqdn', 'esxi_version', 'deployment_type', 'deployment_status',
+            'secure_boot_status', 'serial_number', 'ilo_ip', 'model', 'manufacturer',
+            'bios_version', 'management_ip', 'management_netmask', 'management_gateway',
+            'vmotion_ip', 'vmotion_netmask', 'datastore_name', 'progress', 'progress_text',
+            'registered_time', 'last_seen', 'approved_time', 'deployment_started',
+            'deployment_time', 'reinstall_requested',
+        ];
+    }
+}
+
+if (!function_exists('storeRowToHost')) {
+    /**
+     * Turn a database row into the array shape the application expects.
+     *
+     * @param array<string, mixed> $row            Row from the hosts table
+     * @param string[]             $additionalMacs Secondary MACs for this host
+     * @return array<string, mixed>
+     */
+    function storeRowToHost(array $row, array $additionalMacs = []) {
+        $extra = json_decode((string)($row['extra'] ?? '{}'), true);
+        if (!is_array($extra)) {
+            $extra = [];
+        }
+
+        // Unmodelled fields first, so a column always wins over a stale copy
+        // that happened to be carried in extra.
+        $host = $extra;
+
+        $host['mac_address'] = $row['mac'];
+
+        foreach (storeHostColumns() as $column) {
+            $host[$column] = $row[$column];
+        }
+
+        $host['progress'] = (int)$row['progress'];
+
+        $host['vlans'] = [
+            'management' => (int)$row['vlan_management'],
+            'vmotion'    => (int)$row['vlan_vmotion'],
+            'storage'    => (int)$row['vlan_storage'],
+        ];
+
+        // The drives list has no fixed shape, so it rides along in extra.
+        $host['datastore'] = [
+            'name'   => $row['datastore_name'],
+            'drives' => $extra['datastore']['drives'] ?? [],
+        ];
+
+        if ($additionalMacs !== []) {
+            $host['additional_macs'] = $additionalMacs;
+        }
+
+        return $host;
+    }
+}
+
+if (!function_exists('storeHostToRow')) {
+    /**
+     * Turn an application host array into a row for the hosts table.
+     *
+     * @param array<string, mixed> $host Host record
+     * @return array<string, mixed>|null Null when the record has no usable MAC
+     */
+    function storeHostToRow(array $host) {
+        $mac = formatMac($host['mac_address'] ?? '');
+        if ($mac === '') {
             return null;
         }
 
-        if (!isset($config['hosts']) || !is_array($config['hosts'])) {
-            $config['hosts'] = [];
+        $row = ['mac' => $mac];
+
+        foreach (storeHostColumns() as $column) {
+            $row[$column] = $host[$column] ?? null;
         }
 
-        return $config;
+        // NOT NULL columns take the empty string; the nullable timestamps stay
+        // null so "never happened" is distinguishable from "happened at ''".
+        foreach (storeHostColumns() as $column) {
+            if ($row[$column] === null && !in_array($column, [
+                'registered_time', 'last_seen', 'approved_time',
+                'deployment_started', 'deployment_time', 'reinstall_requested',
+            ], true)) {
+                $row[$column] = '';
+            }
+        }
+
+        $row['deployment_type']    = $row['deployment_type'] ?: 'standard';
+        $row['deployment_status']  = $row['deployment_status'] ?: 'pending';
+        $row['secure_boot_status'] = $row['secure_boot_status'] ?: 'unknown';
+        $row['progress']           = (int)$row['progress'];
+
+        $row['vlan_management'] = (int)($host['vlans']['management'] ?? 0);
+        $row['vlan_vmotion']    = (int)($host['vlans']['vmotion'] ?? 0);
+        $row['vlan_storage']    = (int)($host['vlans']['storage'] ?? 0);
+
+        $row['datastore_name'] = $host['datastore']['name'] ?? ($host['datastore_name'] ?? '');
+        if ($row['datastore_name'] === '') {
+            $row['datastore_name'] = 'datastore1';
+        }
+
+        // Whatever is left over is kept verbatim.
+        $extra = $host;
+        unset($extra['mac_address'], $extra['vlans'], $extra['additional_macs'], $extra['datastore']);
+        foreach (storeHostColumns() as $column) {
+            unset($extra[$column]);
+        }
+        if (!empty($host['datastore']['drives'])) {
+            $extra['datastore'] = ['drives' => $host['datastore']['drives']];
+        }
+
+        $row['extra'] = (string)json_encode($extra, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return $row;
+    }
+}
+
+if (!function_exists('storeUpsertHostRow')) {
+    /**
+     * Insert or replace one host and its secondary MACs.
+     *
+     * Must be called inside a transaction: the host row and its MAC rows are
+     * one record split across two tables.
+     *
+     * @param PDO                  $pdo  Connection
+     * @param array<string, mixed> $host Host record
+     * @return bool True when the record had a usable MAC and was written
+     */
+    function storeUpsertHostRow(PDO $pdo, array $host) {
+        $row = storeHostToRow($host);
+        if ($row === null) {
+            return false;
+        }
+
+        $columns = array_keys($row);
+        $placeholders = array_map(static fn($c) => ':' . $c, $columns);
+        $updates = array_map(
+            static fn($c) => "$c = excluded.$c",
+            array_filter($columns, static fn($c) => $c !== 'mac')
+        );
+
+        $sql = 'INSERT INTO hosts (' . implode(', ', $columns) . ') '
+            . 'VALUES (' . implode(', ', $placeholders) . ') '
+            . 'ON CONFLICT(mac) DO UPDATE SET ' . implode(', ', $updates);
+
+        $pdo->prepare($sql)->execute($row);
+
+        // Replace the secondary MACs wholesale: the caller hands over the
+        // complete list, and merging would make removing one impossible.
+        $pdo->prepare('DELETE FROM host_macs WHERE host_mac = ?')->execute([$row['mac']]);
+
+        $insert = $pdo->prepare('INSERT OR IGNORE INTO host_macs (mac, host_mac) VALUES (?, ?)');
+        foreach (($host['additional_macs'] ?? []) as $extraMac) {
+            $normalised = formatMac($extraMac);
+            // A secondary MAC equal to the primary would be a duplicate key,
+            // and one already claimed by another host is ignored rather than
+            // stolen -- INSERT OR IGNORE covers both.
+            if ($normalised !== '' && $normalised !== $row['mac']) {
+                $insert->execute([$normalised, $row['mac']]);
+            }
+        }
+
+        return true;
+    }
+}
+
+if (!function_exists('storeFetchHosts')) {
+    /**
+     * Read every host, with its secondary MACs attached.
+     *
+     * One query per table rather than a join with one row per MAC, so the
+     * caller does not have to collapse duplicates.
+     *
+     * @param PDO $pdo Connection
+     * @return array<int, array<string, mixed>>
+     */
+    function storeFetchHosts(PDO $pdo) {
+        $macsByHost = [];
+        foreach ($pdo->query('SELECT mac, host_mac FROM host_macs ORDER BY mac') as $row) {
+            $macsByHost[$row['host_mac']][] = $row['mac'];
+        }
+
+        $hosts = [];
+        foreach ($pdo->query('SELECT * FROM hosts ORDER BY hostname, mac') as $row) {
+            $hosts[] = storeRowToHost($row, $macsByHost[$row['mac']] ?? []);
+        }
+
+        return $hosts;
+    }
+}
+
+if (!function_exists('storeResolveMac')) {
+    /**
+     * Resolve any MAC a host owns to its primary MAC.
+     *
+     * @param PDO    $pdo Connection
+     * @param string $mac MAC in any format
+     * @return string The primary MAC, or '' when no host owns it
+     */
+    function storeResolveMac(PDO $pdo, $mac) {
+        $mac = formatMac($mac);
+        if ($mac === '') {
+            return '';
+        }
+
+        $statement = $pdo->prepare('SELECT mac FROM hosts WHERE mac = ?');
+        $statement->execute([$mac]);
+        if ($statement->fetchColumn() !== false) {
+            return $mac;
+        }
+
+        $statement = $pdo->prepare('SELECT host_mac FROM host_macs WHERE mac = ?');
+        $statement->execute([$mac]);
+        $primary = $statement->fetchColumn();
+
+        return $primary === false ? '' : (string)$primary;
+    }
+}
+
+if (!function_exists('storeLoadHostsConfig')) {
+    /**
+     * Load the whole inventory in the {"hosts": [...]} envelope.
+     *
+     * The envelope is kept because findHostByMac() takes it and the admin
+     * dashboard iterates it. It is no longer a file, but the shape is the API
+     * the rest of the tree was written against.
+     *
+     * @return array{hosts: array<int, array<string, mixed>>}|null
+     */
+    function storeLoadHostsConfig() {
+        try {
+            return ['hosts' => storeFetchHosts(db())];
+        } catch (Throwable $e) {
+            logMessage('Could not read the host inventory: ' . $e->getMessage(), 'ERROR');
+            return null;
+        }
     }
 }
 
 if (!function_exists('storeLoadHosts')) {
     /**
-     * @return array<int, array<string, mixed>> Every host record, or an empty list when unreadable
+     * @return array<int, array<string, mixed>> Every host record
      */
     function storeLoadHosts() {
         $config = storeLoadHostsConfig();
 
-        return $config === null ? [] : array_values($config['hosts']);
+        return $config === null ? [] : $config['hosts'];
     }
 }
 
@@ -63,39 +295,96 @@ if (!function_exists('storeFindHost')) {
     /**
      * Look a host up by any of its MAC addresses.
      *
+     * An indexed lookup rather than a scan of the whole inventory, which is
+     * what the boot endpoints do on every request.
+     *
      * @param string $mac MAC address in any format
      * @return array<string, mixed>|null
      */
     function storeFindHost($mac) {
-        $config = storeLoadHostsConfig();
-        if ($config === null) {
+        try {
+            $pdo = db();
+
+            $primary = storeResolveMac($pdo, $mac);
+            if ($primary === '') {
+                return null;
+            }
+
+            $statement = $pdo->prepare('SELECT * FROM hosts WHERE mac = ?');
+            $statement->execute([$primary]);
+            $row = $statement->fetch();
+            if ($row === false) {
+                return null;
+            }
+
+            $macs = $pdo->prepare('SELECT mac FROM host_macs WHERE host_mac = ? ORDER BY mac');
+            $macs->execute([$primary]);
+
+            return storeRowToHost($row, $macs->fetchAll(PDO::FETCH_COLUMN));
+        } catch (Throwable $e) {
+            logMessage('Could not look up host: ' . $e->getMessage(), 'ERROR');
             return null;
         }
-
-        return findHostByMac($mac, $config);
     }
 }
 
 if (!function_exists('storeMutateHosts')) {
     /**
-     * Run a mutation over the host list under an exclusive lock.
+     * Run a mutation over the whole host list inside one transaction.
      *
-     * The callback receives the hosts array by reference and returns false to
-     * abandon the write. This is the seam the SQLite migration replaces with a
-     * transaction, so callers must do all of their reading inside it: anything
-     * read beforehand and written afterwards is a lost update.
+     * The callback receives the hosts as the array shape it always did and
+     * returns false to abandon the write. It exists so the handlers written
+     * against the JSON file did not have to be rewritten when the storage
+     * changed; new code should prefer the narrower functions below.
+     *
+     * Reads and writes are both inside BEGIN IMMEDIATE, which is the part the
+     * file-based version could not offer: there, a caller that read the
+     * inventory, thought about it, and wrote it back could lose a concurrent
+     * change.
      *
      * @param callable(array<int, array<string, mixed>>): bool $mutator
-     * @return bool True when the mutation ran and the result was persisted
+     * @return bool True when the mutation ran and was committed
      */
     function storeMutateHosts(callable $mutator) {
-        return updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, static function (array &$config) use ($mutator) {
-            if (!isset($config['hosts']) || !is_array($config['hosts'])) {
-                $config['hosts'] = [];
-            }
+        try {
+            return dbTransaction(static function (PDO $pdo) use ($mutator) {
+                $before = storeFetchHosts($pdo);
 
-            return $mutator($config['hosts']);
-        });
+                $hosts = $before;
+                if ($mutator($hosts) === false) {
+                    return false;
+                }
+
+                $keep = [];
+                foreach ($hosts as $host) {
+                    $mac = formatMac($host['mac_address'] ?? '');
+                    if ($mac !== '') {
+                        $keep[$mac] = true;
+                    }
+                }
+
+                // Deletions first: a host removed and another renamed onto its
+                // MAC in the same mutation must not collide.
+                $delete = $pdo->prepare('DELETE FROM hosts WHERE mac = ?');
+                foreach ($before as $host) {
+                    $mac = formatMac($host['mac_address'] ?? '');
+                    if ($mac !== '' && !isset($keep[$mac])) {
+                        $delete->execute([$mac]);
+                    }
+                }
+
+                foreach ($hosts as $host) {
+                    if (is_array($host)) {
+                        storeUpsertHostRow($pdo, $host);
+                    }
+                }
+
+                return true;
+            });
+        } catch (Throwable $e) {
+            logMessage('Could not update the host inventory: ' . $e->getMessage(), 'ERROR');
+            return false;
+        }
     }
 }
 
@@ -103,9 +392,9 @@ if (!function_exists('storeAddHost')) {
     /**
      * Insert a host, refusing to create a duplicate.
      *
-     * The check happens inside the lock: two NICs of the same server can reach
-     * the boot endpoint simultaneously, and checking first and writing after
-     * produced two records or lost one of the writes.
+     * The check and the insert are one transaction: two NICs of the same
+     * server can reach the boot endpoint simultaneously, and checking first
+     * and writing after produced two records or lost one of the writes.
      *
      * @param array<string, mixed> $host Host record, must carry mac_address
      * @return bool True when the host was inserted; false when it already existed
@@ -119,17 +408,26 @@ if (!function_exists('storeAddHost')) {
 
         $host['mac_address'] = $mac;
 
-        return storeMutateHosts(static function (array &$hosts) use ($mac, $host) {
-            foreach ($hosts as $existing) {
-                if (hostMatchesMac($existing, $mac)) {
-                    return false; // Already registered, possibly by a concurrent request.
+        try {
+            return dbTransaction(static function (PDO $pdo) use ($mac, $host) {
+                if (storeResolveMac($pdo, $mac) !== '') {
+                    return false; // Already registered, possibly concurrently.
                 }
-            }
 
-            $hosts[] = $host;
+                // A secondary MAC already claimed by another host means this
+                // is that host arriving on a different port, not a new one.
+                foreach (($host['additional_macs'] ?? []) as $extraMac) {
+                    if (storeResolveMac($pdo, $extraMac) !== '') {
+                        return false;
+                    }
+                }
 
-            return true;
-        });
+                return storeUpsertHostRow($pdo, $host);
+            });
+        } catch (Throwable $e) {
+            logMessage('Could not add host: ' . $e->getMessage(), 'ERROR');
+            return false;
+        }
     }
 }
 
@@ -147,25 +445,43 @@ if (!function_exists('storeUpdateHost')) {
             return false;
         }
 
-        $found = false;
-        $ok = storeMutateHosts(static function (array &$hosts) use ($mac, $data, &$found) {
-            foreach ($hosts as &$host) {
-                if (hostMatchesMac($host, $mac)) {
-                    $host = array_merge($host, $data);
-                    $found = true;
-                    break;
+        try {
+            $found = false;
+            $ok = dbTransaction(static function (PDO $pdo) use ($mac, $data, &$found) {
+                $primary = storeResolveMac($pdo, $mac);
+                if ($primary === '') {
+                    return false;
                 }
+
+                $statement = $pdo->prepare('SELECT * FROM hosts WHERE mac = ?');
+                $statement->execute([$primary]);
+                $row = $statement->fetch();
+                if ($row === false) {
+                    return false;
+                }
+
+                $macs = $pdo->prepare('SELECT mac FROM host_macs WHERE host_mac = ? ORDER BY mac');
+                $macs->execute([$primary]);
+
+                $host = storeRowToHost($row, $macs->fetchAll(PDO::FETCH_COLUMN));
+                $merged = array_merge($host, $data);
+                // The primary MAC identifies the row; a merge must not move it.
+                $merged['mac_address'] = $primary;
+
+                $found = true;
+
+                return storeUpsertHostRow($pdo, $merged);
+            });
+
+            if (!$found) {
+                logMessage("Host with MAC $mac not found for update", 'WARNING');
             }
-            unset($host);
 
-            return $found;
-        });
-
-        if (!$found) {
-            logMessage("Host with MAC $mac not found for update", 'WARNING');
+            return $ok && $found;
+        } catch (Throwable $e) {
+            logMessage('Could not update host: ' . $e->getMessage(), 'ERROR');
+            return false;
         }
-
-        return $ok && $found;
     }
 }
 
@@ -174,7 +490,7 @@ if (!function_exists('storeDeleteHost')) {
      * Remove a host and any credential overrides recorded against it.
      *
      * The overrides go too so they cannot leak to a future host that happens
-     * to reuse the MAC.
+     * to reuse the MAC. host_macs follows the host by cascade.
      *
      * @param string $mac MAC address
      * @return bool True when a host was removed
@@ -185,24 +501,31 @@ if (!function_exists('storeDeleteHost')) {
             return false;
         }
 
-        $found = false;
-        $ok = storeMutateHosts(static function (array &$hosts) use ($mac, &$found) {
-            foreach ($hosts as $index => $host) {
-                if (hostMatchesMac($host, $mac)) {
-                    array_splice($hosts, $index, 1);
-                    $found = true;
-                    break;
+        try {
+            $primary = '';
+            $ok = dbTransaction(static function (PDO $pdo) use ($mac, &$primary) {
+                $primary = storeResolveMac($pdo, $mac);
+                if ($primary === '') {
+                    return false;
                 }
+
+                $pdo->prepare('DELETE FROM hosts WHERE mac = ?')->execute([$primary]);
+
+                return true;
+            });
+
+            if ($ok && $primary !== '') {
+                // Outside the transaction: the credentials are a separate file
+                // and cannot join it. Ordered so a failure here leaves an
+                // orphaned override rather than a host with no credentials.
+                storeDeleteHostCredentials($primary);
             }
 
-            return $found;
-        });
-
-        if ($found && $ok) {
-            storeDeleteHostCredentials($mac);
+            return $ok;
+        } catch (Throwable $e) {
+            logMessage('Could not delete host: ' . $e->getMessage(), 'ERROR');
+            return false;
         }
-
-        return $ok && $found;
     }
 }
 
@@ -239,10 +562,6 @@ if (!function_exists('storeMergeDiscoveredHosts')) {
      * supplies those at approval time -- so this deliberately does not go
      * through the host editor's validation. It is the reason discovery has an
      * endpoint of its own rather than reusing POST /v1/hosts.
-     *
-     * The whole merge runs inside one lock. Reading the inventory, matching in
-     * PHP and writing it back afterwards is how a concurrent scan and an
-     * operator edit lose each other's work.
      *
      * @param array<int, array<string, mixed>> $discovered Scan results
      * @return array{added: int, updated: int, ok: bool}

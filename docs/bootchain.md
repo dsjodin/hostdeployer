@@ -33,7 +33,7 @@ Från strömpåslag till färdig ESXi-host.
  ┌────────────────────────────────────────────────────────────────┐
  │  www/boot.ipxe.php                                             │
  │                                                                │
- │   slår upp MAC i hosts.json (även additional_macs)             │
+ │   slår upp MAC i inventariet (även sekundära MAC-adresser)    │
  │                                                                │
  │   okänd MAC + autoreg på  → registrera som pending → vänta     │
  │   okänd MAC + autoreg av  → vänta, max 5 försök                │
@@ -117,7 +117,7 @@ VLAN.
 | iPXE laddas om och om igen | `iPXE`-klassen testas inte först → loop |
 | "Could not reach the deployment server" | `next-server` fel, eller nginx nere |
 | Installer startar men hittar inga moduler | `esxi/<ver>/boot.cfg` saknas eller har fel `modules=` |
-| Hosten fastnar i väntloop | status ≠ approved i `hosts.json`; `logs/ipxe_boot.log` |
+| Hosten fastnar i väntloop | status ≠ approved i inventariet; `logs/ipxe_boot.log` |
 | Kickstart avbryts direkt | hosten inte godkänd, eller `waiting_template_path` pekar fel |
 | Hosten blir aldrig `deployed` | `%firstboot`-callbacken; `logs/deployment.log` |
 

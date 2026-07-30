@@ -18,7 +18,7 @@ www/                 PHP-endpoints och admin-dashboard
 ipxe/                boot.ipxe + ipxe.efi
 esxi/<version>/      uppackat installationsmedia
 templates/           kickstart-mallar
-config/              konfiguration (*.example.* i git, live-filer ignoreras)
+config/              konfiguration + värdinventariet (SQLite), ignoreras i git
 dhcp/                exempel för Kea och ISC dhcpd
 scripts/             ilo_scanner.py, secure_boot_manager.py
 logs/                loggfiler
@@ -34,7 +34,7 @@ install -d -m 0750 -o www-data -g www-data /srv/autodeploy/logs
 
 # 2. Skapa konfigurationen från exempelfilerna
 cd /srv/autodeploy/config
-for f in global_config hosts credentials; do cp $f.example.json $f.json; done
+for f in global_config credentials; do cp $f.example.json $f.json; done
 cp auth_config.example.php auth_config.php
 chmod 0640 *.json auth_config.php
 chown root:www-data *.json auth_config.php
@@ -56,6 +56,24 @@ install -m 0755 /srv/autodeploy/update_dhcp_config.sh /usr/local/bin/
 mkdir -p /srv/autodeploy/esxi/8.0U3
 # montera ISO:n och kopiera innehållet hit (boot.cfg måste finnas)
 ```
+
+### Värdinventariet
+
+Hostarna ligger i SQLite: `config/autodeploy.db`. Databasen och dess schema
+skapas automatiskt första gången något läser eller skriver — inget
+installationssteg behövs, och det finns ingen `hosts.json` längre.
+
+Konfigurationen (`global_config.json`) och credentials är kvar som filer. De är
+små nästlade dokument som fylls i för hand vid installation, och en databas
+hade tagit bort den möjligheten utan att ge något tillbaka.
+
+```bash
+sqlite3 /srv/autodeploy/config/autodeploy.db \
+  'SELECT mac, hostname, deployment_status FROM hosts;'
+```
+
+Säkerhetskopiera `config/` i sin helhet — databasen, krypteringsnyckeln och
+konfigurationen hör ihop.
 
 ### Krypteringsnyckel
 

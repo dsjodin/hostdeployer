@@ -104,6 +104,6 @@ echo '{"command":"lease4-get-all","service":["dhcp4"]}' | kea-shell --host 127.0
 ## 6. Nästa steg för integrationen
 
 `processApproveHostAction()` i `www/host_functions.php` skriver idag bara
-`management_ip` till `hosts.json`. Med Kea kan den samtidigt skicka en
+`management_ip` till inventariet. Med Kea kan den samtidigt skicka en
 `reservation-add`, så servern får rätt adress redan under installationen i
 stället för en slumpmässig pool-adress. Det är inte implementerat än.
