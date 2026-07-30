@@ -11,6 +11,7 @@ define('ADMIN_DASHBOARD', true);
 
 require_once __DIR__ . '/../lib/auth.php';
 require_once __DIR__ . '/../lib/images.php';
+require_once __DIR__ . '/../lib/kea.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');

@@ -68,7 +68,7 @@ jobs:
       # DHCP server's configuration, so it is the last script in the tree that
       # should carry a quoting bug.
       - name: shellcheck
-        run: shellcheck update_dhcp_config.sh
+        run: shellcheck install.sh update_dhcp_config.sh deploy/*.sh
 
   python:
     name: python
