@@ -884,27 +884,30 @@ function processSettingsActions($action, $postData) {
                 break;
             }
 
-            // Update the DHCP server through the restricted sudo helper.
-            $command = sprintf(
-                'sudo -n /usr/local/bin/update_dhcp_config.sh %s %s %s %s %s %s 2>&1',
-                escapeshellarg($dhcpStart),
-                escapeshellarg($dhcpEnd),
-                escapeshellarg($subnetMask),
-                escapeshellarg($gateway),
-                escapeshellarg(implode(',', $dnsServers)),
-                escapeshellarg($webserverIp)
-            );
+            // Applied through the Kea control API rather than by regenerating a
+            // file and restarting the daemon. The restart dropped every DHCP
+            // exchange in flight at that moment, and rewriting /etc needed the
+            // web server to be able to run something as root -- neither of
+            // which Kea asks for. config-test rejects a bad configuration
+            // before it replaces the running one.
+            $dhcp = keaUpdateNetwork([
+                'start'     => $dhcpStart,
+                'end'       => $dhcpEnd,
+                'netmask'   => $subnetMask,
+                'gateway'   => $gateway,
+                'dns'       => implode(',', $dnsServers),
+                'domain'    => $globalConfig['network']['domain'] ?? '',
+                'server_ip' => $webserverIp,
+            ]);
 
-            $output = [];
-            $returnCode = 1;
-            exec($command, $output, $returnCode);
-
-            if ($returnCode !== 0) {
-                logMessage('Failed to update DHCP configuration: ' . implode(' | ', $output), 'ERROR');
-                $result['error'] = 'Network settings were saved, but the DHCP configuration could not be updated. See the logs for details.';
+            if ($dhcp['success']) {
+                $result['message'] = 'Network settings saved. ' . $dhcp['message'];
             } else {
-                logMessage('DHCP configuration updated successfully');
-                $result['message'] = 'Network settings saved and the DHCP configuration was updated';
+                // The settings are saved either way: the kickstart and the boot
+                // chain read them from global_config.json, so they take effect
+                // even when the DHCP server could not be reached.
+                $result['error'] = 'Network settings were saved, but the DHCP server could not be '
+                    . 'updated: ' . $dhcp['error'];
             }
             break;
             

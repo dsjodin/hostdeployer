@@ -24,21 +24,41 @@ kea-dhcp4 -t /etc/kea/kea-dhcp4.conf      # validera
 systemctl enable --now kea-dhcp4-server
 ```
 
-Eller låt admin-UI:t generera filen:
+`install.sh` gör det här åt dig och använder samma generator.
 
-```bash
-DHCP_BACKEND=kea /usr/local/bin/update_dhcp_config.sh \
-    192.0.2.100 192.0.2.200 255.255.255.0 192.0.2.1 192.0.2.53 192.0.2.10
+## 2b. Ändringar i drift går via API:t, inte via filen
+
+Admin-UI:t skriver **inte** om `/etc/kea/kea-dhcp4.conf` när du ändrar
+nätverksinställningar. Den pratar med Keas kontrollsocket (`lib/kea.php`):
+
+```
+config-test   validerar — en config Kea inte accepterar ersätter aldrig den som kör
+config-set    tillämpar på den körande servern, utan omstart
+config-write  persisterar, så en omstart kommer tillbaka till det som kördes
 ```
 
-Sätt `DHCP_BACKEND=kea` i PHP-FPM-miljön (`env[DHCP_BACKEND] = kea` i poolens
-konfiguration) så att UI:t använder Kea-grenen.
+Det tar bort tre saker den filbaserade vägen hade:
+
+- **sudo-regeln.** Webbservern körde tidigare ett skript som root för att kunna
+  skriva under `/etc` och starta om en tjänst. Nu behövs skrivrättighet på en
+  unix-socket, inget mer.
+- **Omstarten**, som tappade varje pågående DHCP-förhandling i just det
+  ögonblicket — inklusive servrar mitt i en installation.
+- **Kapplöpningen** mellan att läsa filen, ändra den och skriva tillbaka.
+
+Socketen är den nya förtroendegränsen: det som kan skriva till den kan
+konfigurera om DHCP för hela provisioneringsnätet. `install.sh` ger den till
+webbserverns grupp och inget bredare.
+
+Klientklasserna rörs aldrig av UI:t. De är en egenskap hos bootkedjan, inte hos
+operatörens adressplan — och det var precis genom att regenerera dem som den
+gamla vägen upprepade gånger rullade tillbaka bootmetoden.
 
 ## 3. Klassificering — ordningen spelar roll
 
 ```
 iPXE       (option 77 == "iPXE")        →  http://<server>/ipxe/boot.ipxe
-UEFI-HTTP  (option 60 == "HTTPClient")  →  http://<server>/ipxe/ipxe.efi
+UEFI-HTTP  (option 60 == "HTTPClient")  →  http://<server>/mboot.efi
 UEFI-PXE   (option 93 == 7 / 9 / 11)    →  ipxe.efi via TFTP
 ```
 
@@ -47,7 +67,9 @@ option 77 och sin arch-kod; matchar UEFI-grenen först får den `ipxe.efi` igen
 och loopar för evigt. Därför har de senare klasserna `not member('iPXE')`.
 
 `UEFI-HTTP` måste echo:a tillbaka `HTTPClient` i option 60, annars ignorerar
-firmware svaret.
+firmware svaret. Den går direkt på ESXi-laddaren — ingen iPXE, ingen TFTP.
+`www/mboot.efi.php` slår upp vilken version klienten är tilldelad och strömmar
+den laddaren; `mboot` frågar sedan efter `/boot.cfg` bredvid den.
 
 `UEFI-PXE` är den enda grenen som behöver en tftpd. Har alla servrar HTTP Boot i
 firmware kan du ta bort klassen och avinstallera tftpd.

@@ -27,6 +27,31 @@ logs/                loggfiler
 
 ## Installation
 
+Debian 13 (trixie). PHP 8.4, nginx och Kea 2.6 finns alla i main, så ingenting
+här behöver en tredjeparts apt-källa.
+
+```bash
+git clone https://github.com/dsjodin/hostdeployer.git
+cd hostdeployer
+sudo ./install.sh
+```
+
+Skriptet frågar efter nätverk och lösenord, eller tar dem som flaggor:
+
+```bash
+sudo ./install.sh --interface ens192 --server-ip 10.0.0.2 \
+     --dhcp-range 10.0.0.100-10.0.0.200 --netmask 255.255.255.0 \
+     --gateway 10.0.0.1 --dns 10.0.0.53 --yes
+```
+
+Det installerar paketen, lägger trädet under `/srv/autodeploy`, konfigurerar
+PHP-FPM och nginx med ett certifikat, skriver Kea-konfigurationen, genererar
+krypteringsnyckeln och API-token, och verifierar att allt svarar. Det går att
+köra om — befintliga hemligheter, konfiguration och värdinventariet rörs inte.
+
+<details>
+<summary>Manuellt, om du hellre gör stegen själv</summary>
+
 ```bash
 # 1. Lägg trädet på plats
 install -d -m 0750 /srv/autodeploy
@@ -60,6 +85,8 @@ install -m 0755 /srv/autodeploy/update_dhcp_config.sh /usr/local/bin/
 #        https://<server>/api/v1/images
 # Kräver bsdtar, 7z eller xorriso på servern.
 ```
+
+</details>
 
 ### Värdinventariet
 
@@ -121,15 +148,20 @@ php /srv/autodeploy/lib/api_auth.php min-automation operator
 
 Bara digesten hamnar i `auth_config.php` — tappar du token får du skapa en ny.
 
-### sudo-regel
+### DHCP
 
-Admin-UI:t behöver köra DHCP-uppdateringen som root:
+Admin-UI:t ändrar DHCP genom **Keas kontroll-API**, inte genom att skriva om
+`/etc/kea/kea-dhcp4.conf`. `config-test` validerar, `config-set` tillämpar på
+den körande servern utan omstart, `config-write` persisterar.
 
-```
-www-data ALL=(root) NOPASSWD: /usr/local/bin/update_dhcp_config.sh
-```
+Det betyder att webbservern **inte kör någonting som root**. Den behöver bara
+skrivrättighet på kontrollsocketen, vilket `install.sh` ger genom att lägga
+`www-data` i Keas grupp. Den tidigare sudo-regeln tas bort om den finns kvar.
 
-Skriptet validerar alla sina argument själv och tar inga andra kommandon.
+`update_dhcp_config.sh` finns kvar men är inte längre UI:ts väg. Den behövs för
+ISC dhcpd (som saknar API och inte finns i Debian 13) och för att bygga om
+konfigurationsfilen från grunden när Kea inte startar och alltså inte har någon
+socket att prata med.
 
 ## Konfiguration
 
