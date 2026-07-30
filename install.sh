@@ -373,6 +373,19 @@ install -d -m 0750 -o root -g www-data "$ROOT"
 
 # vendor/ and tests/ are development-only; .git has no business on an
 # appliance. config/ is excluded so a re-run never overwrites live secrets.
+# --delete removes anything under $ROOT that is not in the checkout, which is
+# what keeps an upgrade from leaving a deleted file behind. Everything the
+# appliance creates after installation therefore has to be excluded, or a
+# re-run destroys it:
+#
+#   venv/      built by the Python step further down. Not excluded, rsync tried
+#              to delete it on every re-run, printed a page of "cannot delete
+#              non-empty directory", and left a half-removed virtualenv behind.
+#   templates/ the kickstart templates are edited and uploaded through the
+#              admin UI. Copying the shipped ones over them reverted an
+#              operator's edits, and --delete removed every template they had
+#              uploaded along with the backups the UI made before each save.
+#              Seeded below instead, without overwriting.
 rsync -a --delete \
     --exclude '.git' \
     --exclude '.github' \
@@ -380,6 +393,8 @@ rsync -a --delete \
     --exclude 'tests' \
     --exclude 'logs' \
     --exclude 'config' \
+    --exclude 'venv' \
+    --exclude 'templates' \
     --exclude 'esxi/*/' \
     "$SRC"/ "$ROOT"/
 
@@ -400,15 +415,39 @@ rsync -a --delete \
 install -d -m 3770 -o root    -g www-data "$ROOT/config"
 install -d -m 0750 -o www-data -g www-data "$ROOT/logs"
 install -d -m 0755 -o root    -g www-data "$ROOT/esxi"
-install -d -m 0750 -o www-data -g www-data "$ROOT/templates/backups"
+install -d -m 2770 -o root    -g www-data "$ROOT/templates"
+install -d -m 2770 -o root    -g www-data "$ROOT/templates/backups"
 install -d -m 0755 -o root    -g www-data "$ROOT/ipxe"
 
-# The templates directory is edited through the admin UI.
-chown -R root:www-data "$ROOT/templates"
-chmod 0770 "$ROOT/templates"
+# Seeded, not synchronised. The admin UI edits these files, uploads new ones
+# and keeps a backup before every save, so the shipped copies are a starting
+# point rather than the truth: an existing file is left exactly as it is, and
+# what an operator added is never touched.
+#
+# setgid on the directories above is what keeps that working -- a template
+# uploaded by the web server lands in the www-data group, which is what the
+# 0660 below assumes.
+seeded=0
+kept=0
+for template in "$SRC"/templates/*.cfg; do
+    [ -f "$template" ] || continue
+
+    target="$ROOT/templates/$(basename "$template")"
+    if [ -e "$target" ]; then
+        kept=$((kept + 1))
+    else
+        install -m 0660 -o root -g www-data "$template" "$target"
+        seeded=$((seeded + 1))
+    fi
+done
+
+# Modes only, no ownership: a template the web server uploaded is owned by
+# www-data, and taking that away would stop it being editable through the UI
+# that created it.
+chmod 2770 "$ROOT/templates" "$ROOT/templates/backups"
 find "$ROOT/templates" -type f -exec chmod 0660 {} +
 
-info "tree installed, logs and templates writable by www-data"
+info "tree installed; templates: $seeded seeded, $kept kept as they are"
 
 # --------------------------------------------------------------------------
 # Configuration
