@@ -43,7 +43,7 @@ else
     readonly C_OK='' C_WARN='' C_ERR='' C_DIM='' C_OFF=''
 fi
 
-step()  { printf '\n%s==>%s %s\n' "$C_OK" "$C_OFF" "$*"; }
+step()  { CURRENT_STEP="$*"; printf '\n%s==>%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 info()  { printf '    %s\n' "$*"; }
 skip()  { printf '    %sskipped: %s%s\n' "$C_DIM" "$*" "$C_OFF"; }
 warn()  { printf '    %swarning: %s%s\n' "$C_WARN" "$*" "$C_OFF"; }
@@ -53,6 +53,23 @@ die()   { printf '\n%serror:%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
 # in several hundred lines of apt output.
 NOTES=()
 note() { NOTES+=("$*"); }
+
+# Under set -e any unguarded command ends the run, and every step after it --
+# nginx, Kea -- then never happens. Without this the only evidence is that the
+# output stops, which looks exactly like a step that finished quietly. Name the
+# step, the line and the command instead.
+#
+# die() exits explicitly and so does not fire ERR; it prints its own message.
+CURRENT_STEP="startup"
+# shellcheck disable=SC2317  # reached through the ERR trap below, not by a call
+on_error() {
+    local rc=$? line="$1" command="$2"
+    printf '\n%serror:%s aborted during "%s" at line %s: %s (exit %s)\n' \
+        "$C_ERR" "$C_OFF" "$CURRENT_STEP" "$line" "$command" "$rc" >&2
+    printf '    Nothing after that step ran. Fix the cause and re-run: this\n' >&2
+    printf '    script is idempotent and leaves existing secrets alone.\n' >&2
+}
+trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
 # --------------------------------------------------------------------------
 # Arguments
@@ -299,7 +316,6 @@ PACKAGES=(
     nginx
     "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-cli"
     "php${PHP_VERSION}-sqlite3" "php${PHP_VERSION}-curl"
-    "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml"
     kea-dhcp4-server kea-ctrl-agent
     libarchive-tools          # bsdtar, for extracting ESXi ISOs
     python3-requests python3-venv
@@ -328,10 +344,24 @@ if ! "php${PHP_VERSION}" -m 2>/dev/null | grep -qx sodium; then
      passwords and there is no fallback. Install php${PHP_VERSION}-common, or
      whichever package provides sodium.so on this system."
 fi
-for ext in pdo_sqlite curl mbstring; do
-    "php${PHP_VERSION}" -m 2>/dev/null | grep -qx "$ext" || die "PHP $PHP_VERSION is missing the $ext extension"
+# Only what the code actually loads. mbstring and php-xml used to be required
+# here and installed above, and nothing in lib/, www/ or scripts/ calls a single
+# mb_* function, DOMDocument or SimpleXML -- so the check stopped installations
+# over an extension the appliance never loads. Every string path goes through
+# preg_*, str_* and htmlspecialchars(..., 'UTF-8'), which live in Core and pcre.
+#
+# Each message names the package, because a check that refuses to continue and
+# does not say what to install is a check that costs more than it saves.
+declare -A REQUIRED_EXTENSIONS=(
+    [pdo_sqlite]="php${PHP_VERSION}-sqlite3"   # lib/db.php: the whole inventory
+    [curl]="php${PHP_VERSION}-curl"            # outbound calls from the admin UI
+)
+for ext in "${!REQUIRED_EXTENSIONS[@]}"; do
+    "php${PHP_VERSION}" -m 2>/dev/null | grep -qx "$ext" || die "PHP $PHP_VERSION is missing the $ext extension.
+     Install it with: apt install ${REQUIRED_EXTENSIONS[$ext]}
+     (or, if the package is installed already: phpenmod -v $PHP_VERSION $ext)"
 done
-info "PHP $("php${PHP_VERSION}" -r 'echo PHP_VERSION;') with sodium, pdo_sqlite, curl, mbstring"
+info "PHP $("php${PHP_VERSION}" -r 'echo PHP_VERSION;') with sodium, pdo_sqlite and curl"
 
 # --------------------------------------------------------------------------
 # The tree
@@ -353,7 +383,21 @@ rsync -a --delete \
     --exclude 'esxi/*/' \
     "$SRC"/ "$ROOT"/
 
-install -d -m 0750 -o root    -g www-data "$ROOT/config"
+# 3770, not 0750. The inventory is a SQLite database in here, and SQLite has to
+# create the database plus its -wal and -shm sidecars -- which needs write on
+# the directory, not just on the file. saveJsonConfig() needs it too: it writes
+# a temporary file beside the target and renames over it, which is what makes
+# the write atomic. With 0750 the web server could read config/ and nothing
+# else, so the dashboard came up and every host lookup failed with
+# "unable to open database file".
+#
+# The sticky bit is what keeps that from being a downgrade. A process that can
+# write to a directory can normally replace any file in it whatever that file's
+# own mode says, so 0770 alone would let www-data swap out auth_config.php --
+# which is PHP that gets require()d -- or secret.key. With +t only the owner may
+# unlink or rename, so the three root-owned files below stay out of reach while
+# the ones the application maintains do not.
+install -d -m 3770 -o root    -g www-data "$ROOT/config"
 install -d -m 0750 -o www-data -g www-data "$ROOT/logs"
 install -d -m 0755 -o root    -g www-data "$ROOT/esxi"
 install -d -m 0750 -o www-data -g www-data "$ROOT/templates/backups"
@@ -482,8 +526,20 @@ PHPEOF
     info "wrote config/auth_config.php with the admin account"
 fi
 
-chown root:www-data "$ROOT"/config/*.json "$ROOT/config/auth_config.php"
-chmod 0640 "$ROOT"/config/*.json "$ROOT/config/auth_config.php"
+# Ownership splits by who writes the file, because the sticky bit on config/
+# keys off exactly that: only a file's owner may replace it.
+#
+# The admin UI rewrites global_config.json (settings, template assignments) and
+# credentials.json (default and per-host passwords) through saveJsonConfig(),
+# which renames a temporary file over the target -- so www-data has to own them.
+# auth_config.php holds the accounts, the roles and the API token digests, and
+# nothing in the application ever writes it; it stays root's, and +t is what
+# stops www-data replacing it anyway.
+chown www-data:www-data "$ROOT"/config/*.json
+chmod 0640 "$ROOT"/config/*.json
+
+chown root:www-data "$ROOT/config/auth_config.php"
+chmod 0640 "$ROOT/config/auth_config.php"
 
 # --------------------------------------------------------------------------
 # Secrets
@@ -537,25 +593,39 @@ fi
 
 step "Python helpers"
 
-if ! python3 -c 'import redfish' 2>/dev/null; then
-    if apt-cache show python3-redfish >/dev/null 2>&1 && [ "$SKIP_PACKAGES" != 1 ]; then
-        apt-get install -y -qq --no-install-recommends python3-redfish >/dev/null
-        info "installed python3-redfish from apt"
+# redfish is optional -- only secure boot management needs it -- so nothing in
+# this step may end the run. Every command that can fail sits in an if
+# condition, where set -e does not apply and a failure selects the next branch
+# instead of aborting.
+#
+# The apt attempt used to be guarded by "apt-cache show python3-redfish", which
+# answers a different question than the one asked: apt can hold a record for a
+# name that has no installation candidate. The guard passed, the install failed,
+# and because it sat in the body of the if rather than its condition the whole
+# script stopped here -- before nginx, before Kea, leaving a machine that looked
+# installed and had neither. Just try the install and let the result decide.
+if python3 -c 'import redfish' 2>/dev/null; then
+    skip "the redfish module is already available"
+elif [ "$SKIP_PACKAGES" != 1 ] \
+     && apt-get install -y -qq --no-install-recommends python3-redfish >/dev/null 2>&1; then
+    info "installed python3-redfish from apt"
+else
+    # Debian 13 marks the system Python externally managed (PEP 668), so a
+    # venv is the supported way in. --system-site-packages keeps
+    # python3-requests from apt visible rather than installing it twice.
+    if [ ! -x "$ROOT/venv/bin/python3" ]; then
+        python3 -m venv --system-site-packages "$ROOT/venv" 2>/dev/null \
+            || warn "could not create $ROOT/venv"
+    fi
+
+    if [ -x "$ROOT/venv/bin/pip" ] \
+       && "$ROOT/venv/bin/pip" install --quiet redfish 2>/dev/null; then
+        info "installed redfish into $ROOT/venv"
     else
-        # Debian 13 marks the system Python externally managed (PEP 668), so a
-        # venv is the supported way in. --system-site-packages keeps
-        # python3-requests from apt visible rather than installing it twice.
-        if [ ! -x "$ROOT/venv/bin/python3" ]; then
-            python3 -m venv --system-site-packages "$ROOT/venv"
-        fi
-        if "$ROOT/venv/bin/pip" install --quiet redfish 2>/dev/null; then
-            info "installed redfish into $ROOT/venv"
-        else
-            warn "could not install the redfish module"
-            note "Secure boot management needs the Python 'redfish' module:
+        warn "could not install the redfish module"
+        note "Secure boot management needs the Python 'redfish' module:
        $ROOT/venv/bin/pip install redfish
      Everything else works without it."
-        fi
     fi
 fi
 
@@ -669,7 +739,13 @@ if [ -e /etc/nginx/sites-enabled/default ]; then
     info "removed the default site (it owns default_server on :80)"
 fi
 
-nginx -t >/dev/null 2>&1 || { nginx -t; die "The nginx configuration was rejected"; }
+# Same shape as the Kea check below: an if, so the retry that prints the error
+# does not take the script down before die() explains it.
+if ! nginx -t >/dev/null 2>&1; then
+    printf '\n'
+    nginx -t || true
+    die "The nginx configuration was rejected; the error is above."
+fi
 systemctl enable --now nginx >/dev/null 2>&1 || true
 systemctl reload nginx
 info "site enabled, configuration valid"
@@ -735,8 +811,16 @@ if id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -qx "$KEA_GROUP"; then
     skip "www-data is already in the $KEA_GROUP group"
 else
     if getent group "$KEA_GROUP" >/dev/null 2>&1; then
-        usermod -aG "$KEA_GROUP" www-data
-        info "added www-data to the $KEA_GROUP group"
+        # Not fatal: the appliance works without it, the admin UI just cannot
+        # change DHCP. Aborting here would skip the Kea configuration below,
+        # which matters more.
+        if usermod -aG "$KEA_GROUP" www-data; then
+            info "added www-data to the $KEA_GROUP group"
+        else
+            warn "could not add www-data to $KEA_GROUP"
+            note "The admin UI needs write access to Kea's control socket to change
+     DHCP settings. Grant it however this system expects."
+        fi
     else
         warn "no '$KEA_GROUP' group; cannot grant socket access"
         note "The admin UI needs write access to Kea's control socket to change
@@ -778,7 +862,23 @@ install -d -m 0755 /var/log/kea /var/lib/kea
 if [ -f /etc/kea/kea-dhcp4.conf ] && grep -q "hostdeployer" /etc/kea/kea-dhcp4.conf; then
     skip "/etc/kea/kea-dhcp4.conf already written by this installer"
 else
-    [ -f /etc/kea/kea-dhcp4.conf ] && cp -p /etc/kea/kea-dhcp4.conf "/etc/kea/kea-dhcp4.conf.bak.$(date +%Y%m%d%H%M%S)"
+    # Debian's kea-dhcp4 runs under an AppArmor profile, and the daemon reads
+    # its configuration after dropping to the service user. A file written by
+    # root and left root:root is not necessarily one it may open -- and the
+    # refusal arrives as "Unable to open file", which reads like the file is
+    # missing rather than like a permission problem.
+    #
+    # So keep whatever ownership and mode the package chose, rather than
+    # guessing at them. The shipped file is the authority on what Kea expects.
+    KEA_CONF_OWNER="root:$KEA_GROUP"
+    KEA_CONF_MODE="0640"
+
+    if [ -f /etc/kea/kea-dhcp4.conf ]; then
+        KEA_CONF_OWNER="$(stat -c '%U:%G' /etc/kea/kea-dhcp4.conf)"
+        KEA_CONF_MODE="$(stat -c '%a' /etc/kea/kea-dhcp4.conf)"
+        cp -p /etc/kea/kea-dhcp4.conf "/etc/kea/kea-dhcp4.conf.bak.$(date +%Y%m%d%H%M%S)" \
+            || warn "could not back up the existing kea-dhcp4.conf"
+    fi
 
     PREFIX_LEN=0
     tmp="$MASK_INT"
@@ -800,15 +900,32 @@ else
         --domain "$DOMAIN" \
         > /etc/kea/kea-dhcp4.conf
 
-    chmod 0644 /etc/kea/kea-dhcp4.conf
-    info "wrote /etc/kea/kea-dhcp4.conf for $SUBNET/$PREFIX_LEN on $INTERFACE"
+    # Restored, not invented: see the comment where these were captured.
+    chown "$KEA_CONF_OWNER" /etc/kea/kea-dhcp4.conf || warn "could not set the owner on kea-dhcp4.conf"
+    chmod "$KEA_CONF_MODE" /etc/kea/kea-dhcp4.conf
+    info "wrote /etc/kea/kea-dhcp4.conf for $SUBNET/$PREFIX_LEN on $INTERFACE ($KEA_CONF_OWNER $KEA_CONF_MODE)"
 fi
 
-kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1 \
-    || { kea-dhcp4 -t /etc/kea/kea-dhcp4.conf; die "Kea rejected the configuration"; }
+# An if rather than "|| { retry; die; }": a brace group after the final || is
+# not exempt from set -e, so the retry that exists to show the error killed the
+# script before die() could explain what the error meant.
+if ! kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1; then
+    printf '\n'
+    kea-dhcp4 -t /etc/kea/kea-dhcp4.conf || true
+    die "Kea rejected /etc/kea/kea-dhcp4.conf.
+
+     'Unable to open file' means Kea could not read it at all rather than that
+     the contents are wrong. Check, in this order:
+       ls -l /etc/kea/kea-dhcp4.conf          exists, non-empty, mode 0644?
+       aa-status | grep -i kea                confined by AppArmor?
+       journalctl -t audit --since -5min | grep -i kea    denied?
+     Otherwise the parse error above names the line."
+fi
 
 systemctl enable --now kea-dhcp4-server >/dev/null 2>&1 || true
-systemctl restart kea-dhcp4-server
+systemctl restart kea-dhcp4-server \
+    || die "kea-dhcp4-server did not start. The configuration validated, so this
+     is usually the interface: journalctl -u kea-dhcp4-server -n 30"
 info "kea-dhcp4-server running on $INTERFACE"
 
 # A running worker keeps the supplementary groups it started with, so the
@@ -839,7 +956,28 @@ check() {
 check "php${PHP_VERSION}-fpm running"   systemctl is-active --quiet "php${PHP_VERSION}-fpm"
 check "nginx running"                   systemctl is-active --quiet nginx
 check "kea-dhcp4-server running"        systemctl is-active --quiet kea-dhcp4-server
-check "the inventory database opens"    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php'; storeLoadHosts();"
+# db() rather than storeLoadHosts(): storeLoadHostsConfig() catches Throwable
+# and returns null, so the wrapper exits 0 whatever went wrong and this check
+# could not fail. It passed on an installation whose database the web server
+# could not open at all -- the failure only surfaced later, as an ERROR line in
+# admin_dashboard.log that nobody was watching for.
+#
+# The write is the part that matters. WAL mode has to create -wal and -shm
+# beside the database, so a directory the web server may read but not write
+# fails here and not at open().
+check "the web server can open and write the inventory" \
+    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php';
+        db()->exec('CREATE TABLE IF NOT EXISTS _install_check (x INTEGER)');
+        db()->exec('DROP TABLE _install_check');"
+
+# The admin UI rewrites both of these, and saveJsonConfig() does it by renaming
+# a temporary file over the target -- which needs write on config/, not on the
+# file. Checked separately because it fails for the same reason as the database
+# and is just as silent: the settings page reports "saved" and nothing changes.
+check "the web server can write the configuration" \
+    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/utils.php';
+        \$c = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+        exit(\$c !== null && saveJsonConfig(AUTODEPLOY_GLOBAL_CONFIG, \$c) ? 0 : 1);"
 check "the stored ESXi password decrypts" sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php'; exit(storeLoadCredentials('esxi')['root_password'] === '' ? 1 : 0);"
 check "the dashboard answers on 443"    curl -skf -o /dev/null "https://127.0.0.1/admin/login.php"
 check "the boot chain answers on 80"    bash -c "curl -sf -o /dev/null -w '%{http_code}' 'http://127.0.0.1/boot.ipxe.php?mac=00:00:00:00:00:01' | grep -q 200"

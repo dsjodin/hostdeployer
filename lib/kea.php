@@ -274,14 +274,31 @@ if (!function_exists('keaUpdateNetwork')) {
             // per-host pins an operator made.
             $existing = $config['Dhcp4']['subnet4'][0] ?? [];
 
-            $config['Dhcp4']['subnet4'] = [[
+            $subnet = [
                 'id'           => (int)($existing['id'] ?? 1),
                 'subnet'       => "$network/$prefix",
                 'pools'        => [['pool' => $settings['start'] . ' - ' . $settings['end']]],
                 'next-server'  => $settings['server_ip'],
                 'option-data'  => $options,
                 'reservations' => $existing['reservations'] ?? [],
-            ]];
+            ];
+
+            // Carried over rather than rebuilt, for the same reason as the id:
+            // they are properties of the deployment, not of the operator's
+            // address plan, and dropping them here would undo them on the first
+            // network change made from the admin UI.
+            //
+            // client-class is what stops Kea handing a lease to every machine in
+            // the broadcast domain, and relay is what makes a subnet reachable
+            // through a DHCP relay at all -- both silently, and both only
+            // noticed much later.
+            foreach (['client-class', 'require-client-classes', 'relay'] as $key) {
+                if (isset($existing[$key])) {
+                    $subnet[$key] = $existing[$key];
+                }
+            }
+
+            $config['Dhcp4']['subnet4'] = [$subnet];
 
             keaApplyConfig($config);
         } catch (KeaException $e) {
