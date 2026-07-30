@@ -7,6 +7,10 @@ konfigurera servrar.
 ## Dokumentation
 
 - [`docs/CODE-REVIEW.md`](docs/CODE-REVIEW.md) — granskning och genomförda åtgärder
+- [`docs/CODE-REVIEW-2026-07.md`](docs/CODE-REVIEW-2026-07.md) — kodgranskning juli 2026
+- [`docs/SECURITY-REVIEW-2026-07.md`](docs/SECURITY-REVIEW-2026-07.md) — säkerhetsgranskning juli 2026
+- [`docs/network-segmentation.md`](docs/network-segmentation.md) — admin-VLAN och provisionerings-VLAN
+- [`docs/install-troubleshooting.md`](docs/install-troubleshooting.md) — när `install.sh` inte kommer i mål
 - [`docs/PLAN-via-go-port.md`](docs/PLAN-via-go-port.md) — plan för att hämta hem via_go:s styrkor
 - [`docs/bootchain.md`](docs/bootchain.md) — bootkedjan steg för steg + felsökning
 - [`docs/dhcp.md`](docs/dhcp.md) — DHCP med Kea: klasser, kontroll-API, felsökning
