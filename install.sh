@@ -712,7 +712,13 @@ if [ -e /etc/nginx/sites-enabled/default ]; then
     info "removed the default site (it owns default_server on :80)"
 fi
 
-nginx -t >/dev/null 2>&1 || { nginx -t; die "The nginx configuration was rejected"; }
+# Same shape as the Kea check below: an if, so the retry that prints the error
+# does not take the script down before die() explains it.
+if ! nginx -t >/dev/null 2>&1; then
+    printf '\n'
+    nginx -t || true
+    die "The nginx configuration was rejected; the error is above."
+fi
 systemctl enable --now nginx >/dev/null 2>&1 || true
 systemctl reload nginx
 info "site enabled, configuration valid"
@@ -855,8 +861,21 @@ else
     info "wrote /etc/kea/kea-dhcp4.conf for $SUBNET/$PREFIX_LEN on $INTERFACE"
 fi
 
-kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1 \
-    || { kea-dhcp4 -t /etc/kea/kea-dhcp4.conf; die "Kea rejected the configuration"; }
+# An if rather than "|| { retry; die; }": a brace group after the final || is
+# not exempt from set -e, so the retry that exists to show the error killed the
+# script before die() could explain what the error meant.
+if ! kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1; then
+    printf '\n'
+    kea-dhcp4 -t /etc/kea/kea-dhcp4.conf || true
+    die "Kea rejected /etc/kea/kea-dhcp4.conf.
+
+     'Unable to open file' means Kea could not read it at all rather than that
+     the contents are wrong. Check, in this order:
+       ls -l /etc/kea/kea-dhcp4.conf          exists, non-empty, mode 0644?
+       aa-status | grep -i kea                confined by AppArmor?
+       journalctl -t audit --since -5min | grep -i kea    denied?
+     Otherwise the parse error above names the line."
+fi
 
 systemctl enable --now kea-dhcp4-server >/dev/null 2>&1 || true
 systemctl restart kea-dhcp4-server \
