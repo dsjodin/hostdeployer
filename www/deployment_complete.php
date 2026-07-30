@@ -66,6 +66,8 @@ try {
     $updated = storeUpdateHost($mac, [
         'deployment_status' => 'deployed',
         'deployment_time'   => date('Y-m-d H:i:s'),
+        'progress'          => 100,
+        'progress_text'     => 'deployed',
     ]);
 
     if (!$updated) {

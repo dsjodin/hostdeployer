@@ -102,6 +102,7 @@ Från strömpåslag till färdig ESXi-host.
 | `/boot.ipxe.php?mac=` | `www/boot.ipxe.php` | 80 | nej |
 | `/esxi/<ver>/*` | statisk | 80 | nej |
 | `/ks.cfg?mac=` | `www/generate_kickstart.php` | 80 | nej |
+| `/progress.php?mac=&step=` | `www/progress.php` | 80 | nej |
 | `/admin/deployment_complete.php?mac=` | `www/deployment_complete.php` | 80 | nej |
 | `/admin/` | `www/admin_dashboard.php` | **443** | session + CSRF |
 
@@ -120,6 +121,34 @@ VLAN.
 | Hosten fastnar i väntloop | status ≠ approved i inventariet; `logs/ipxe_boot.log` |
 | Kickstart avbryts direkt | hosten inte godkänd, eller `waiting_template_path` pekar fel |
 | Hosten blir aldrig `deployed` | `%firstboot`-callbacken; `logs/deployment.log` |
+
+## Progress
+
+Bootkedjan rapporterar hur långt en host kommit. Procenten är checkpoints, inte
+ett mått på utfört arbete: klienten säger var den nådde, och tystnad mellan två
+checkpoints är diagnosen.
+
+| % | Rapporteras av | Betyder |
+|---|---|---|
+| 10 | `boot.ipxe.php` | bootscript utfärdat; hämtar kärna + ~110 moduler |
+| 50 | `generate_kickstart.php` | installern kör och har hämtat sin kickstart |
+| 75 | `progress.php?step=firstboot` | `%firstboot` har börjat |
+| 85 | `progress.php?step=network` | managementnätet konfigureras |
+| 90 | `progress.php?step=services` | tjänster konfigureras |
+| 100 | `deployment_complete.php` | klar |
+
+Värdet backar aldrig. En host som gör om ett steg, eller bootar om i en redan
+klar installation, ska inte se ut att tappa mark.
+
+Stegnamnen i `progress.php` matchas mot en fast tabell (`storeProgressSteps()`).
+En klient kan alltså inte skriva fri text i operatörens vy eller utropa sig
+själv som färdig — det beslutet ligger hos `deployment_complete.php`, som också
+slår på secure boot igen.
+
+Dashboarden pollar `www/host_status.php` var tredje sekund. Polling och inte
+SSE: php-fpm binder en worker per öppen SSE-anslutning, så tjugo operatörer som
+tittar på tjugo installationer hade tömt poolen och tagit ner bootkedjan med
+sig.
 
 Loggar: `logs/ipxe_boot.log`, `logs/kickstart_generator.log`,
 `logs/deployment.log`, `logs/admin_dashboard.log`, `logs/auth.log`.

@@ -189,6 +189,9 @@ try {
         ]);
     }
 
+    // The installer reached us, so the kernel and every module loaded.
+    storeSetProgress($clientMac, 50, 'installing');
+
     echo $kickstart;
 
     ksLog("Generated $deploymentType kickstart for $clientMac ({$variables['HOSTNAME']})");

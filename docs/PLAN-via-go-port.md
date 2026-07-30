@@ -7,7 +7,7 @@ med rakt motsatt arkitektur. Sju konkreta saker är värda att hämta hem.
 
 Relaterat: [`CODE-REVIEW.md`](CODE-REVIEW.md) · [`bootchain.md`](bootchain.md)
 
-**Status:** fas 1–4 är genomförda. Fas 5–7 återstår.
+**Status:** fas 1–5 är genomförda. Fas 6–7 återstår.
 
 > **Avvikelse i fas 4:** bara värdinventariet flyttade till SQLite.
 > `credentials.json` och `global_config.json` är kvar som filer — de är små
@@ -209,7 +209,7 @@ oåterkalleligt oläsbart*. Lägg `secret.key` i `.gitignore`.
 
 ---
 
-## Fas 5 — Progressrapportering
+## Fas 5 — Progressrapportering ✅
 
 Kolumnerna `progress` och `progress_text` finns redan i fas 4-schemat.
 

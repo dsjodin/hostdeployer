@@ -398,10 +398,34 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                                 <td><?php echo h(formatMac($host['mac_address'])); ?></td>
                                 <td><?php echo h($host['management_ip']); ?></td>
                                 <td>
-                                    <?php if ($host['deployment_status'] === 'deploying'): ?>
+                                    <?php
+                                    $isDeploying = $host['deployment_status'] === 'deploying';
+                                    $progress = max(0, min(100, (int)($host['progress'] ?? 0)));
+                                    $progressText = (string)($host['progress_text'] ?? '');
+                                    ?>
+                                    <?php if ($isDeploying): ?>
                                         <span class="badge bg-primary">Deploying</span>
                                     <?php else: ?>
                                         <span class="badge bg-success">Deployed</span>
+                                    <?php endif; ?>
+
+                                    <?php if ($isDeploying): ?>
+                                    <!-- Refreshed in place by the poller below; a deploying host is
+                                         the one row an operator actually watches. -->
+                                    <div class="progress mt-1" style="height: 1.1rem"
+                                         data-progress-for="<?php echo h(formatMac($host['mac_address'])); ?>">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                             role="progressbar"
+                                             style="width: <?php echo $progress; ?>%"
+                                             aria-valuenow="<?php echo $progress; ?>"
+                                             aria-valuemin="0" aria-valuemax="100">
+                                            <?php echo $progress; ?>%
+                                        </div>
+                                    </div>
+                                    <small class="text-muted"
+                                           data-progress-text-for="<?php echo h(formatMac($host['mac_address'])); ?>">
+                                        <?php echo h($progressText); ?>
+                                    </small>
                                     <?php endif; ?>
                                 </td>
                                 <td>

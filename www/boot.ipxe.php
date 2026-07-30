@@ -285,6 +285,10 @@ if ($deploymentStatus === 'approved') {
     ]);
 }
 
+// The host has a boot script; from here it is fetching a kernel and ~110
+// modules over HTTP, which is the longest silent stretch of the install.
+storeSetProgress($mac, 10, 'loading the installer');
+
 echo "#!ipxe\n\n";
 echo 'echo Booting ESXi ' . sanitizeIpxeText($esxiVersion) . ' installer for '
     . sanitizeIpxeText($hostname) . ' (' . $mac . ")\n\n";

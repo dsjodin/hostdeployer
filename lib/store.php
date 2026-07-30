@@ -549,6 +549,66 @@ if (!function_exists('storeTouchHost')) {
     }
 }
 
+if (!function_exists('storeProgressSteps')) {
+    /**
+     * The steps a host may report from %firstboot, and how far through it is.
+     *
+     * A fixed table because the percentage is the appliance's judgement, not
+     * the client's: a host cannot report itself at 99% to jump the queue in
+     * the operator's view, and it cannot claim completion at all -- that is
+     * deployment_complete.php's decision, because it is the one that also
+     * re-enables secure boot.
+     *
+     * @return array<string, array{int, string}>
+     */
+    function storeProgressSteps() {
+        return [
+            'firstboot' => [75, 'running first boot configuration'],
+            'network'   => [85, 'configuring the management network'],
+            'services'  => [90, 'configuring services'],
+        ];
+    }
+}
+
+if (!function_exists('storeSetProgress')) {
+    /**
+     * Record how far through an installation a host is.
+     *
+     * The operator watching a twenty-minute install previously had a status of
+     * "deploying" and nothing else -- no way to tell a host loading modules
+     * from one wedged on a missing kickstart. The percentages are checkpoints
+     * along the boot chain rather than a measure of work done, which is the
+     * best any network installer can offer: the client reports where it got
+     * to, and silence between two checkpoints is the diagnosis.
+     *
+     * Never moves backwards. A host that retries a step mid-install would
+     * otherwise appear to lose ground, and a reboot into an already-finished
+     * installation would reset a completed host to 10%.
+     *
+     * @param string $mac      MAC address
+     * @param int    $progress Percentage, 0-100
+     * @param string $text     What the host is doing
+     * @return bool True when the host was found and the write succeeded
+     */
+    function storeSetProgress($mac, $progress, $text) {
+        $progress = max(0, min(100, (int)$progress));
+
+        $host = storeFindHost($mac);
+        if ($host === null) {
+            return false;
+        }
+
+        if ((int)($host['progress'] ?? 0) > $progress) {
+            return true;
+        }
+
+        return storeUpdateHost($mac, [
+            'progress'      => $progress,
+            'progress_text' => (string)$text,
+        ]);
+    }
+}
+
 if (!function_exists('storeMergeDiscoveredHosts')) {
     /**
      * Merge the results of a hardware scan into the inventory.
