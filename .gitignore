@@ -29,3 +29,7 @@ __pycache__/
 
 # Local API token for the helper scripts
 config/api_local_token
+
+# Encryption key for the stored credentials. Losing this makes every stored
+# password permanently unreadable -- back it up somewhere other than git.
+config/secret.key

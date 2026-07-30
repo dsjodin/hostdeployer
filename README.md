@@ -57,6 +57,28 @@ mkdir -p /srv/autodeploy/esxi/8.0U3
 # montera ISO:n och kopiera innehållet hit (boot.cfg måste finnas)
 ```
 
+### Krypteringsnyckel
+
+Lösenorden i `config/credentials.json` — ESXi-rootlösenordet varje host
+installeras med, och iLO-kontot — lagras krypterade med XChaCha20-Poly1305.
+Nyckeln skapas automatiskt vid första skrivningen, men kör den explicit så du
+vet att den finns innan något behöver den:
+
+```bash
+php /srv/autodeploy/lib/secrets.php --encrypt-credentials
+```
+
+> **Säkerhetskopiera `config/secret.key`.** Utan den är varje lagrat lösenord
+> oåterkalleligt oläsbart. Filen skapas med rättigheterna `0600` och ligger i
+> `.gitignore`.
+>
+> En skadad nyckel *avvisas* i stället för att ersättas — koden vägrar hellre
+> starta än tyst genererar en ny som gör alla lagrade lösenord obrukbara.
+
+En installation som föregår krypteringen fortsätter fungera: klartextvärden
+läses som de är, loggas som en varning, och skrivs krypterade nästa gång filen
+sparas. Kommandot ovan gör det direkt.
+
 ### API-token
 
 Python-skripten läser och skriver via REST-API:t i stället för att öppna

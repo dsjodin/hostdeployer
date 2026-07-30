@@ -18,6 +18,7 @@
  */
 
 require_once __DIR__ . '/utils.php';
+require_once __DIR__ . '/secrets.php';
 
 // ---------------------------------------------------------------------------
 // Hosts
@@ -308,6 +309,70 @@ if (!function_exists('storeMergeDiscoveredHosts')) {
 // Credentials
 // ---------------------------------------------------------------------------
 
+if (!function_exists('storeSecretFieldPaths')) {
+    /**
+     * Which leaves of the credentials document are secrets.
+     *
+     * Only these are encrypted. Usernames, and the structure itself, stay
+     * readable so the file can still be inspected and hand-edited -- the point
+     * is to protect the passwords, not to make the configuration opaque.
+     *
+     * @return array<string, string> Section => the key holding its password
+     */
+    function storeSecretFieldPaths() {
+        return [
+            'ilo'  => 'admin_password',
+            'esxi' => 'root_password',
+        ];
+    }
+}
+
+if (!function_exists('storeMapCredentialSecrets')) {
+    /**
+     * Apply a transform to every secret leaf of a credentials document.
+     *
+     * The per-host override tables are walked too: an override holds the same
+     * kind of password as the default it replaces, and leaving those in the
+     * clear would protect the estate-wide account while exposing the ones set
+     * on individual hosts.
+     *
+     * @param array<string, mixed>    $credentials Full document
+     * @param callable(mixed): string $transform   Applied to each secret
+     * @return array<string, mixed>
+     */
+    function storeMapCredentialSecrets(array $credentials, callable $transform) {
+        foreach (storeSecretFieldPaths() as $section => $field) {
+            if (!isset($credentials[$section]) || !is_array($credentials[$section])) {
+                continue;
+            }
+
+            if (isset($credentials[$section][$field]) && is_string($credentials[$section][$field])) {
+                $credentials[$section][$field] = $transform($credentials[$section][$field]);
+            }
+
+            if (!isset($credentials[$section]['hosts']) || !is_array($credentials[$section]['hosts'])) {
+                continue;
+            }
+
+            foreach ($credentials[$section]['hosts'] as $mac => $override) {
+                if (!is_array($override)) {
+                    continue;
+                }
+
+                // iLO overrides use "password"; ESXi overrides use
+                // "root_password". Both are secrets whatever they are called.
+                foreach (['password', 'root_password', $field] as $key) {
+                    if (isset($override[$key]) && is_string($override[$key])) {
+                        $credentials[$section]['hosts'][$mac][$key] = $transform($override[$key]);
+                    }
+                }
+            }
+        }
+
+        return $credentials;
+    }
+}
+
 if (!function_exists('storeLoadCredentials')) {
     /**
      * Load credentials, optionally narrowed to a type and a specific host.
@@ -327,6 +392,13 @@ if (!function_exists('storeLoadCredentials')) {
         if ($credentials === null) {
             return null;
         }
+
+        // Decrypted here, once, so every caller above this line deals in
+        // plaintext and none of them needs to know the file is encrypted.
+        $credentials = storeMapCredentialSecrets(
+            $credentials,
+            static fn($value) => secretDecryptOrPassThrough($value, 'a stored credential')
+        );
 
         if ($type === null) {
             return $credentials;
@@ -361,6 +433,11 @@ if (!function_exists('storeSaveCredentials')) {
      * @return bool True on success
      */
     function storeSaveCredentials(array $credentials) {
+        // Callers hand over plaintext, because that is what they were given.
+        // Encrypting on the way out is what makes the round trip transparent
+        // and what migrates a legacy plaintext file on its first write.
+        $credentials = storeMapCredentialSecrets($credentials, 'secretEncrypt');
+
         $ok = saveJsonConfig(AUTODEPLOY_CREDENTIALS, $credentials);
         if ($ok) {
             @chmod(AUTODEPLOY_CREDENTIALS, 0640);

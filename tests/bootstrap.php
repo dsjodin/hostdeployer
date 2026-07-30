@@ -38,6 +38,7 @@ register_shutdown_function(static function () use ($root): void {
 
 require_once __DIR__ . '/../lib/utils.php';
 require_once __DIR__ . '/../lib/bootcfg.php';
+require_once __DIR__ . '/../lib/secrets.php';
 require_once __DIR__ . '/../lib/store.php';
 
 // lib/auth.php no longer starts a session when it is included, which is what

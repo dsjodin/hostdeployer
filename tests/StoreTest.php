@@ -28,6 +28,12 @@ final class StoreTest extends TestCase
         @unlink(AUTODEPLOY_CREDENTIALS . '.lock');
     }
 
+    /** @return array<string, mixed> The credentials file exactly as stored */
+    private function rawCredentialsFile(): array
+    {
+        return (array)json_decode((string)file_get_contents(AUTODEPLOY_CREDENTIALS), true);
+    }
+
     public function testAddsAndFindsAHost(): void
     {
         self::assertTrue(storeAddHost(['mac_address' => '00:0c:29:91:cf:eb', 'hostname' => 'esxi-01']));
@@ -181,6 +187,103 @@ final class StoreTest extends TestCase
     public function testUnknownCredentialTypeIsNull(): void
     {
         self::assertNull(storeLoadCredentials('nonexistent'));
+    }
+
+    // -- encryption at rest -------------------------------------------------
+
+    /**
+     * The whole point of phase 3: what reaches the disk must not be readable.
+     */
+    public function testSecretsAreEncryptedOnDisk(): void
+    {
+        $credentials = storeLoadCredentials();
+        $credentials['ilo']['hosts']['00:0c:29:91:cf:eb'] = ['password' => 'per-host-ilo'];
+        $credentials['esxi']['hosts']['00:0c:29:91:cf:eb'] = ['root_password' => 'per-host-esxi'];
+        storeSaveCredentials($credentials);
+
+        $onDisk = (string)file_get_contents(AUTODEPLOY_CREDENTIALS);
+
+        foreach (['global-ilo', 'global-esxi', 'per-host-ilo', 'per-host-esxi'] as $secret) {
+            self::assertStringNotContainsString($secret, $onDisk, "$secret reached the disk in the clear");
+        }
+
+        $raw = $this->rawCredentialsFile();
+        self::assertTrue(secretIsEncrypted($raw['ilo']['admin_password']));
+        self::assertTrue(secretIsEncrypted($raw['esxi']['root_password']));
+        self::assertTrue(secretIsEncrypted($raw['ilo']['hosts']['00:0c:29:91:cf:eb']['password']));
+        self::assertTrue(secretIsEncrypted($raw['esxi']['hosts']['00:0c:29:91:cf:eb']['root_password']));
+    }
+
+    public function testUsernamesAndStructureStayReadable(): void
+    {
+        storeSaveCredentials(storeLoadCredentials());
+
+        $raw = $this->rawCredentialsFile();
+
+        self::assertSame('Administrator', $raw['ilo']['admin_user'], 'only passwords are encrypted');
+        self::assertArrayHasKey('hosts', $raw['ilo']);
+    }
+
+    public function testCallersStillSeePlaintext(): void
+    {
+        storeSaveCredentials(storeLoadCredentials());
+
+        self::assertSame('global-ilo', storeLoadCredentials('ilo')['admin_password']);
+        self::assertSame('global-esxi', storeLoadCredentials('esxi')['root_password']);
+    }
+
+    public function testAnEncryptedPerHostOverrideStillWins(): void
+    {
+        $credentials = storeLoadCredentials();
+        $credentials['esxi']['hosts']['00:0c:29:91:cf:eb'] = ['root_password' => 'per-host'];
+        storeSaveCredentials($credentials);
+
+        self::assertSame(
+            'per-host',
+            storeLoadCredentials('esxi', '00:0c:29:91:cf:eb')['root_password']
+        );
+        self::assertSame('global-esxi', storeLoadCredentials('esxi')['root_password']);
+    }
+
+    /**
+     * setUp() writes a plaintext file, which is what an install predating this
+     * change looks like. It has to keep working, and encrypt itself on write.
+     */
+    public function testALegacyPlaintextFileIsReadableAndMigratesOnSave(): void
+    {
+        self::assertSame('global-esxi', storeLoadCredentials('esxi')['root_password']);
+
+        self::assertFalse(
+            secretIsEncrypted($this->rawCredentialsFile()['esxi']['root_password']),
+            'the fixture starts out in the clear'
+        );
+
+        storeSaveCredentials(storeLoadCredentials());
+
+        self::assertTrue(secretIsEncrypted($this->rawCredentialsFile()['esxi']['root_password']));
+        self::assertSame('global-esxi', storeLoadCredentials('esxi')['root_password']);
+    }
+
+    public function testRepeatedSavesDoNotDoubleEncrypt(): void
+    {
+        for ($i = 0; $i < 3; $i++) {
+            storeSaveCredentials(storeLoadCredentials());
+        }
+
+        self::assertSame('global-esxi', storeLoadCredentials('esxi')['root_password']);
+    }
+
+    public function testAPartlyMigratedFileIsHandled(): void
+    {
+        // One secret already encrypted, one still in the clear -- what an
+        // interrupted migration leaves behind.
+        $raw = $this->rawCredentialsFile();
+        $raw['ilo']['admin_password'] = secretEncrypt('global-ilo');
+        file_put_contents(AUTODEPLOY_CREDENTIALS, json_encode($raw));
+
+        $loaded = storeLoadCredentials();
+        self::assertSame('global-ilo', $loaded['ilo']['admin_password']);
+        self::assertSame('global-esxi', $loaded['esxi']['root_password']);
     }
 
     // -- discovery merge ----------------------------------------------------

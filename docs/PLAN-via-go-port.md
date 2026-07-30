@@ -7,7 +7,7 @@ med rakt motsatt arkitektur. Sju konkreta saker är värda att hämta hem.
 
 Relaterat: [`CODE-REVIEW.md`](CODE-REVIEW.md) · [`bootchain.md`](bootchain.md)
 
-**Status:** fas 1 och 2 är genomförda. Fas 3–7 återstår.
+**Status:** fas 1, 2 och 3 är genomförda. Fas 4–7 återstår.
 
 ---
 
@@ -141,7 +141,7 @@ konfigurationsfilerna direkt — vilket är det som gör fas 3 och 4 möjliga.
 
 ---
 
-## Fas 3 — Kryptera credentials at rest
+## Fas 3 — Kryptera credentials at rest ✅
 
 **Ny fil:** `lib/secrets.php`
 
