@@ -6,6 +6,7 @@ konfigurera servrar.
 
 ## Dokumentation
 
+- [`docs/ANALYS-hostdeployer-vs-via_go.md`](docs/ANALYS-hostdeployer-vs-via_go.md) — vilket av de två repona som är värt att satsa på
 - [`docs/CODE-REVIEW.md`](docs/CODE-REVIEW.md) — granskning och genomförda åtgärder
 - [`docs/PLAN-via-go-port.md`](docs/PLAN-via-go-port.md) — plan för att hämta hem via_go:s styrkor
 - [`docs/bootchain.md`](docs/bootchain.md) — bootkedjan steg för steg + felsökning
