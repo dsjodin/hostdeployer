@@ -61,6 +61,7 @@ note() { NOTES+=("$*"); }
 #
 # die() exits explicitly and so does not fire ERR; it prints its own message.
 CURRENT_STEP="startup"
+# shellcheck disable=SC2317  # reached through the ERR trap below, not by a call
 on_error() {
     local rc=$? line="$1" command="$2"
     printf '\n%serror:%s aborted during "%s" at line %s: %s (exit %s)\n' \
