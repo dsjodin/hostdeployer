@@ -64,11 +64,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # update_dhcp_config.sh runs as root through a sudo rule and writes the
-      # DHCP server's configuration, so it is the last script in the tree that
+      # install.sh runs as root and deploy/kea-config.sh writes the DHCP
+      # server's configuration, so these are the last scripts in the tree that
       # should carry a quoting bug.
       - name: shellcheck
-        run: shellcheck install.sh update_dhcp_config.sh deploy/*.sh
+        run: shellcheck install.sh deploy/*.sh
 
   python:
     name: python

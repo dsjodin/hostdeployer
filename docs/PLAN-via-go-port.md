@@ -9,6 +9,12 @@ Relaterat: [`CODE-REVIEW.md`](CODE-REVIEW.md) · [`bootchain.md`](bootchain.md)
 
 **Status:** alla sju faser är genomförda.
 
+> **Ändrat efter planen skrevs:** DHCP-vägen. Planen utgick från
+> `update_dhcp_config.sh` och en statisk `dhcp/kea-dhcp4.conf`. Båda är borta:
+> admin-UI:t ändrar DHCP genom Keas kontroll-API (`lib/kea.php`), och
+> konfigurationsfilen genereras av `deploy/kea-config.sh` när den behöver
+> byggas om. ISC dhcpd stödjs inte längre. Se [`dhcp.md`](dhcp.md).
+>
 > **Otestat på riktig hårdvara:** UEFI HTTP Boot-vägen är verifierad
 > ände-till-ände mot fixtures, men inte mot firmware. Testa båda vägarna på
 > nested ESXi-VM:ar innan hårdvara rörs — se verifieringsavsnittet.
