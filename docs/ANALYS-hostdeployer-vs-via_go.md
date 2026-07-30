@@ -39,7 +39,7 @@ ISO-uppladdning, omskriven boot.cfg. Funktionellt är gapet i stort sett stängt
 |---|---|---|
 | Modell | **Orkestrerare** — konfigurerar andras tjänster | **Appliance** — är tjänsterna |
 | Språk | PHP 8.1+ / Python 3 | Go 1.25 |
-| DHCP | Kea (ISC), styrd via control-socket (`lib/kea.php`) | Egen DHCPv4 på raw socket (`internal/dhcp`) |
+| DHCP | Kea (ISC), styrd via control-socket (`lib/kea.php`) | Egen DHCPv4 på raw socket (`internal/dhcp`) — **en skuld, se 2b** |
 | Webbserver | nginx + PHP-FPM | inbyggd (gin), två lyssnare (:80 boot, :443 API/UI) |
 | TFTP | tftpd-hpa | inbyggd (`internal/tftp`) |
 | Distribution | `install.sh` (885 rader), Debian 13, systemd × 5 | en statisk binär, eller `docker compose up` |
@@ -67,21 +67,68 @@ Verifierat: `go build ./...` grönt, samtliga via_go-paket gröna
   out-of-band via Redfish.
 - **`templates/kickstart_template_vcf.cfg`** — VCF-specifik kickstart som
   lämnar vMotion och övrig nätverkskonfiguration åt VCF.
-- **Kea** som DHCP-motor. En produktionsmässig DHCP-server från ISC, med
-  riktig lease-databas, DECLINE-hantering, HA och loggning.
+- **Kea** som DHCP-motor, med klassificeringen redan skriven och körande. Se
+  avsnitt 2b — detta är hostdeployers tyngsta enskilda fördel.
 
 ### Bara via_go
 - **En binär.** Ingen nginx, ingen PHP-FPM, ingen sudo-regel, inget
   distroberoende. Detta är den enskilt största praktiska skillnaden.
-- **DHCP-relay / IP-helper** (`RelayAgentIP`) — binären behöver inte sitta på
-  provisioneringsnätet.
-- **Device classes med option-lagring** — vendor class (`PXEClient:Arch:00007`,
-  `HTTPClient:Arch:00016`, ARM64-varianterna) styr bootmetod, och DHCP-optioner
-  löses global → group → host med prioritet. Genuint bra design.
+- **Device classes med option-lagring** — DHCP-optioner löses global → group →
+  host med prioritet (`internal/model/option.go`). Prioritetsmodellen är bra;
+  DHCP-servern under den är det inte (avsnitt 2b).
 - **Websocket-strömmade loggar** till UI:t.
 - **Genererad OpenAPI-spec** (`docs/swagger.json`) och `example-scripts/`.
 - **Uppström.** `maxiepax/go-via` är den etablerade VIA-ersättaren i
   VMware-communityn. Rättningar kan gå åt båda håll.
+
+---
+
+## 2b. Den egna DHCP-servern är en skuld, inte en tillgång
+
+Första versionen av den här analysen räknade via_go:s inbyggda DHCP-server som
+en styrka. **Det var fel**, och rättas här.
+
+En egenbyggd DHCP-server betyder att man äger ett nätverksprotokoll själv, och
+står ensam när det slutar fungera. Konkret, i den här kodbasen:
+
+**Omfattningen.** `internal/dhcp/dhcpd.go` är 637 rader som gör
+DISCOVER/REQUEST-hantering, option-kodning per RFC 2132, paketbygge och
+broadcast-vs-unicast-beslut, på en rå AF_PACKET-socket
+(`raw.ListenPacket`, kräver `CAP_NET_RAW`). Testtäckningen är 47 %.
+
+**Beroendena är övergivna.**
+
+| Beroende | Version | Status |
+|---|---|---|
+| `github.com/mdlayher/raw` | `v0.0.0-20191009` | **Deprecated.** Författaren hänvisar till `mdlayher/packet` |
+| `github.com/google/gopacket` | `v1.1.19` | Underhållet flyttat till community-forken `gopacket/gopacket` |
+
+Det är alltså inte framtida underhållsskuld — den är förfallen idag.
+
+**Kea gör redan samma sak, bättre.** hostdeployers `dhcp/kea-dhcp4.conf`
+klassificerar på exakt samma signaler:
+
+| via_go `internal/dhcp` | Kea client-class |
+|---|---|
+| `HTTPClient:Arch:00016` → HTTP boot | `option[60] == 'HTTPClient'` → `boot-file-name` |
+| `PXEClient:Arch:00007/00011` → TFTP | `option[93] == 0x0007/0x0009/0x000b` → `next-server` |
+| *saknas* | `option[77] == 'iPXE'` → iPXE-kedjan |
+
+Utöver det ger Kea lease-databas, DECLINE-hantering, HA, strukturerad loggning
+och ISC bakom sig. `lib/kea.php` (350 rader) driver redan `config-set` över
+control-socketen, så integrationsmönstret är bevisat.
+
+Det innebär också att **DHCP-relay / IP-helper inte är en via_go-styrka** —
+Kea hanterar relayad DHCP nativt och mer komplett.
+
+**Följden för rekommendationen.** Den vänder inte, eftersom `internal/dhcp` är
+ett *isolerat* paket: det läser samma store och skriver option 67, och är inte
+invävt i resten. Men två saker ändras:
+
+1. Argumentet "en binär, inga beroenden" försvagas. Med Kea blir via_go binär +
+   Kea = två komponenter, mot hostdeployers fem (nginx, PHP-FPM, Kea,
+   tftpd-hpa, sudo-regel). Fortfarande bättre, men 5:2 och inte 5:1.
+2. Att riva ut DHCP-servern flyttar först i ordningen — se avsnitt 4.
 
 ---
 
@@ -98,9 +145,12 @@ filläsningar och över på API:t (`scripts/autodeploy_api.py`). De kan peka om
 mot via_go:s `/v1/hosts` med i storleksordningen en dags arbete.
 VCF-mallen är en textfil.
 
-**via_go → hostdeployer:** att bygga in en egen DHCP-server med
-device-class-hantering och relay-stöd i PHP är inte rimligt. Att bli en binär
-är per definition omöjligt. Uppströmslänken går inte att replikera alls.
+**via_go → hostdeployer:** att bli en binär är per definition omöjligt.
+Uppströmslänken går inte att replikera alls. Go:s typsäkerhet, race-detektorn
+och `govulncheck` har ingen motsvarighet i PHP-verktygskedjan.
+
+(Den egna DHCP-servern räknas medvetet **inte** som något att flytta åt något
+håll — den ska bort, se avsnitt 2b.)
 
 **Det unika i hostdeployer är billigt att flytta. Det unika i via_go är det
 inte.** Det är hela argumentet i en mening.
@@ -143,10 +193,9 @@ Var ärlig om detta — det är inte ett enkelriktat val:
    båda är testad mot fixtures, inte mot firmware, och kickstart-logiken i
    via_go härstammar från ESXi 6.7/7.0-eran. Den risken följer med oavsett val.
 
-DHCP-motorn — via_go:s egen raw-socket-implementation mot hostdeployers Kea —
-är medvetet **inte** viktad i rekommendationen. Den kvarstår som en teknisk
-uppgift i via_go (DECLINE hanteras inte, se punkt 4 nedan), inte som ett
-argument i valet mellan repona.
+3. **Den egna DHCP-servern** — 637 rader nätverksprotokoll på två övergivna
+   bibliotek, som Kea redan gör bättre. Se avsnitt 2b. Detta är en verklig
+   kostnad i via_go-spåret, och den första som ska betalas av.
 
 ---
 
@@ -163,16 +212,22 @@ hela jämförelsen att flytta.
 
 ### Föreslagen ordning
 
-1. **Porta iLO-upptäckten.** `scripts/ilo_scanner.py` pekas om från
+1. **Riv `internal/dhcp`, sätt Kea under istället.** Porta `lib/kea.php` till
+   ett Go-paket som driver Kea:s control-socket (`config-set`,
+   `reservation-add`), och flytta klassificeringen till Kea client-classes med
+   `dhcp/kea-dhcp4.conf` som förlaga. Ett drag som tar bort 637 rader
+   protokollkod, två övergivna beroenden, DECLINE-luckan och kravet på
+   `CAP_NET_RAW`. Behåll option-prioritetsmodellen i
+   `internal/model/option.go` — den är bra, det är transporten under som ska bort.
+   Detta först, eftersom allt annat bygger ovanpå en DHCP-väg som fungerar.
+2. **Porta iLO-upptäckten.** `scripts/ilo_scanner.py` pekas om från
    hostdeployers `/api/v1/hosts` till via_go:s `/v1/hosts`. Behåll den i
    Python först — Redfish-biblioteket finns där och omskrivning i Go är
    onödigt arbete innan flödet är bevisat.
-2. **Porta Secure Boot-hanteringen** på samma sätt.
-3. **Lägg in VCF-mallen** som ett val i via_go:s kickstart-generator
+3. **Porta Secure Boot-hanteringen** på samma sätt.
+4. **Lägg in VCF-mallen** som ett val i via_go:s kickstart-generator
    (`internal/api/ks.go` har redan `defaultks` som Go-template och
    group-options att hänga valet på).
-4. **Stäng DHCP DECLINE-luckan** i `internal/dhcp` mot reservationsmodellen.
-   Den gamla implementationen byggde på pools och försvann med dem.
 5. **Engångstoken i `ks=`-URL:en.** Båda repona delar ut rotlösenordshashen
    till vem som helst som kan ta hostens IP på provisioneringsnätet. Detta
    är den allvarligaste kvarvarande säkerhetsbristen i båda och står redan
@@ -180,8 +235,9 @@ hela jämförelsen att flytta.
 6. **Verifiera mot ESXi 8/9 på nested VM:ar**, en per bootväg (PXE-klass och
    HTTP-Boot-klass), innan hårdvara rörs.
 
-Punkt 1–3 är den halva som gör via_go strikt bättre än hostdeployer på allt.
-Efter dem finns ingen anledning att hålla två träd vid liv.
+Punkt 1 betalar av via_go:s största tekniska skuld. Punkt 2–4 är den halva som
+gör via_go strikt bättre än hostdeployer på allt. Efter dem finns ingen
+anledning att hålla två träd vid liv.
 
 ---
 
