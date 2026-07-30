@@ -160,6 +160,22 @@ cat <<CONFIG
             "test": "not member('iPXE') and (option[93].hex == 0x0007 or option[93].hex == 0x0009 or option[93].hex == 0x000b)",
             "next-server": "$SERVER_IP",
             "boot-file-name": "ipxe.efi"
+        },
+        {
+            // The union of the three branches above. The subnet is bound to
+            // this class, so a machine that is not network booting gets no
+            // lease at all.
+            //
+            // Without it Kea answers every DHCPDISCOVER that reaches the
+            // interface -- laptops, printers, anything -- because the classes
+            // above only choose a boot file for a client that already holds a
+            // lease; they do not decide who gets one. On a network that already
+            // has a DHCP server that makes this one a rogue server racing it.
+            //
+            // Must be defined last: classes are evaluated in order, and
+            // member() can only refer to a class already evaluated.
+            "name": "PXE-CLIENTS",
+            "test": "member('iPXE') or member('UEFI-HTTP') or member('UEFI-PXE')"
         }
     ],
 
@@ -168,6 +184,11 @@ cat <<CONFIG
             "id": 1,
             "subnet": "$SUBNET",
             "pools": [ { "pool": "$POOL" } ],
+
+            // Only machines that are network booting. See PXE-CLIENTS above:
+            // without this the pool is handed to whatever asks first.
+            "client-class": "PXE-CLIENTS",
+
 
             // Advertised as siaddr; ipxe/boot.ipxe reads it as \${next-server}.
             "next-server": "$SERVER_IP",

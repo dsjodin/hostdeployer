@@ -43,7 +43,7 @@ else
     readonly C_OK='' C_WARN='' C_ERR='' C_DIM='' C_OFF=''
 fi
 
-step()  { printf '\n%s==>%s %s\n' "$C_OK" "$C_OFF" "$*"; }
+step()  { CURRENT_STEP="$*"; printf '\n%s==>%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 info()  { printf '    %s\n' "$*"; }
 skip()  { printf '    %sskipped: %s%s\n' "$C_DIM" "$*" "$C_OFF"; }
 warn()  { printf '    %swarning: %s%s\n' "$C_WARN" "$*" "$C_OFF"; }
@@ -53,6 +53,22 @@ die()   { printf '\n%serror:%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
 # in several hundred lines of apt output.
 NOTES=()
 note() { NOTES+=("$*"); }
+
+# Under set -e any unguarded command ends the run, and every step after it --
+# nginx, Kea -- then never happens. Without this the only evidence is that the
+# output stops, which looks exactly like a step that finished quietly. Name the
+# step, the line and the command instead.
+#
+# die() exits explicitly and so does not fire ERR; it prints its own message.
+CURRENT_STEP="startup"
+on_error() {
+    local rc=$? line="$1" command="$2"
+    printf '\n%serror:%s aborted during "%s" at line %s: %s (exit %s)\n' \
+        "$C_ERR" "$C_OFF" "$CURRENT_STEP" "$line" "$command" "$rc" >&2
+    printf '    Nothing after that step ran. Fix the cause and re-run: this\n' >&2
+    printf '    script is idempotent and leaves existing secrets alone.\n' >&2
+}
+trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
 # --------------------------------------------------------------------------
 # Arguments
@@ -299,7 +315,6 @@ PACKAGES=(
     nginx
     "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-cli"
     "php${PHP_VERSION}-sqlite3" "php${PHP_VERSION}-curl"
-    "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml"
     kea-dhcp4-server kea-ctrl-agent
     libarchive-tools          # bsdtar, for extracting ESXi ISOs
     python3-requests python3-venv
@@ -328,10 +343,24 @@ if ! "php${PHP_VERSION}" -m 2>/dev/null | grep -qx sodium; then
      passwords and there is no fallback. Install php${PHP_VERSION}-common, or
      whichever package provides sodium.so on this system."
 fi
-for ext in pdo_sqlite curl mbstring; do
-    "php${PHP_VERSION}" -m 2>/dev/null | grep -qx "$ext" || die "PHP $PHP_VERSION is missing the $ext extension"
+# Only what the code actually loads. mbstring and php-xml used to be required
+# here and installed above, and nothing in lib/, www/ or scripts/ calls a single
+# mb_* function, DOMDocument or SimpleXML -- so the check stopped installations
+# over an extension the appliance never loads. Every string path goes through
+# preg_*, str_* and htmlspecialchars(..., 'UTF-8'), which live in Core and pcre.
+#
+# Each message names the package, because a check that refuses to continue and
+# does not say what to install is a check that costs more than it saves.
+declare -A REQUIRED_EXTENSIONS=(
+    [pdo_sqlite]="php${PHP_VERSION}-sqlite3"   # lib/db.php: the whole inventory
+    [curl]="php${PHP_VERSION}-curl"            # outbound calls from the admin UI
+)
+for ext in "${!REQUIRED_EXTENSIONS[@]}"; do
+    "php${PHP_VERSION}" -m 2>/dev/null | grep -qx "$ext" || die "PHP $PHP_VERSION is missing the $ext extension.
+     Install it with: apt install ${REQUIRED_EXTENSIONS[$ext]}
+     (or, if the package is installed already: phpenmod -v $PHP_VERSION $ext)"
 done
-info "PHP $("php${PHP_VERSION}" -r 'echo PHP_VERSION;') with sodium, pdo_sqlite, curl, mbstring"
+info "PHP $("php${PHP_VERSION}" -r 'echo PHP_VERSION;') with sodium, pdo_sqlite and curl"
 
 # --------------------------------------------------------------------------
 # The tree
@@ -537,25 +566,39 @@ fi
 
 step "Python helpers"
 
-if ! python3 -c 'import redfish' 2>/dev/null; then
-    if apt-cache show python3-redfish >/dev/null 2>&1 && [ "$SKIP_PACKAGES" != 1 ]; then
-        apt-get install -y -qq --no-install-recommends python3-redfish >/dev/null
-        info "installed python3-redfish from apt"
+# redfish is optional -- only secure boot management needs it -- so nothing in
+# this step may end the run. Every command that can fail sits in an if
+# condition, where set -e does not apply and a failure selects the next branch
+# instead of aborting.
+#
+# The apt attempt used to be guarded by "apt-cache show python3-redfish", which
+# answers a different question than the one asked: apt can hold a record for a
+# name that has no installation candidate. The guard passed, the install failed,
+# and because it sat in the body of the if rather than its condition the whole
+# script stopped here -- before nginx, before Kea, leaving a machine that looked
+# installed and had neither. Just try the install and let the result decide.
+if python3 -c 'import redfish' 2>/dev/null; then
+    skip "the redfish module is already available"
+elif [ "$SKIP_PACKAGES" != 1 ] \
+     && apt-get install -y -qq --no-install-recommends python3-redfish >/dev/null 2>&1; then
+    info "installed python3-redfish from apt"
+else
+    # Debian 13 marks the system Python externally managed (PEP 668), so a
+    # venv is the supported way in. --system-site-packages keeps
+    # python3-requests from apt visible rather than installing it twice.
+    if [ ! -x "$ROOT/venv/bin/python3" ]; then
+        python3 -m venv --system-site-packages "$ROOT/venv" 2>/dev/null \
+            || warn "could not create $ROOT/venv"
+    fi
+
+    if [ -x "$ROOT/venv/bin/pip" ] \
+       && "$ROOT/venv/bin/pip" install --quiet redfish 2>/dev/null; then
+        info "installed redfish into $ROOT/venv"
     else
-        # Debian 13 marks the system Python externally managed (PEP 668), so a
-        # venv is the supported way in. --system-site-packages keeps
-        # python3-requests from apt visible rather than installing it twice.
-        if [ ! -x "$ROOT/venv/bin/python3" ]; then
-            python3 -m venv --system-site-packages "$ROOT/venv"
-        fi
-        if "$ROOT/venv/bin/pip" install --quiet redfish 2>/dev/null; then
-            info "installed redfish into $ROOT/venv"
-        else
-            warn "could not install the redfish module"
-            note "Secure boot management needs the Python 'redfish' module:
+        warn "could not install the redfish module"
+        note "Secure boot management needs the Python 'redfish' module:
        $ROOT/venv/bin/pip install redfish
      Everything else works without it."
-        fi
     fi
 fi
 
@@ -735,8 +778,16 @@ if id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -qx "$KEA_GROUP"; then
     skip "www-data is already in the $KEA_GROUP group"
 else
     if getent group "$KEA_GROUP" >/dev/null 2>&1; then
-        usermod -aG "$KEA_GROUP" www-data
-        info "added www-data to the $KEA_GROUP group"
+        # Not fatal: the appliance works without it, the admin UI just cannot
+        # change DHCP. Aborting here would skip the Kea configuration below,
+        # which matters more.
+        if usermod -aG "$KEA_GROUP" www-data; then
+            info "added www-data to the $KEA_GROUP group"
+        else
+            warn "could not add www-data to $KEA_GROUP"
+            note "The admin UI needs write access to Kea's control socket to change
+     DHCP settings. Grant it however this system expects."
+        fi
     else
         warn "no '$KEA_GROUP' group; cannot grant socket access"
         note "The admin UI needs write access to Kea's control socket to change
@@ -808,7 +859,9 @@ kea-dhcp4 -t /etc/kea/kea-dhcp4.conf >/dev/null 2>&1 \
     || { kea-dhcp4 -t /etc/kea/kea-dhcp4.conf; die "Kea rejected the configuration"; }
 
 systemctl enable --now kea-dhcp4-server >/dev/null 2>&1 || true
-systemctl restart kea-dhcp4-server
+systemctl restart kea-dhcp4-server \
+    || die "kea-dhcp4-server did not start. The configuration validated, so this
+     is usually the interface: journalctl -u kea-dhcp4-server -n 30"
 info "kea-dhcp4-server running on $INTERFACE"
 
 # A running worker keeps the supplementary groups it started with, so the
