@@ -382,7 +382,21 @@ rsync -a --delete \
     --exclude 'esxi/*/' \
     "$SRC"/ "$ROOT"/
 
-install -d -m 0750 -o root    -g www-data "$ROOT/config"
+# 3770, not 0750. The inventory is a SQLite database in here, and SQLite has to
+# create the database plus its -wal and -shm sidecars -- which needs write on
+# the directory, not just on the file. saveJsonConfig() needs it too: it writes
+# a temporary file beside the target and renames over it, which is what makes
+# the write atomic. With 0750 the web server could read config/ and nothing
+# else, so the dashboard came up and every host lookup failed with
+# "unable to open database file".
+#
+# The sticky bit is what keeps that from being a downgrade. A process that can
+# write to a directory can normally replace any file in it whatever that file's
+# own mode says, so 0770 alone would let www-data swap out auth_config.php --
+# which is PHP that gets require()d -- or secret.key. With +t only the owner may
+# unlink or rename, so the three root-owned files below stay out of reach while
+# the ones the application maintains do not.
+install -d -m 3770 -o root    -g www-data "$ROOT/config"
 install -d -m 0750 -o www-data -g www-data "$ROOT/logs"
 install -d -m 0755 -o root    -g www-data "$ROOT/esxi"
 install -d -m 0750 -o www-data -g www-data "$ROOT/templates/backups"
@@ -511,8 +525,20 @@ PHPEOF
     info "wrote config/auth_config.php with the admin account"
 fi
 
-chown root:www-data "$ROOT"/config/*.json "$ROOT/config/auth_config.php"
-chmod 0640 "$ROOT"/config/*.json "$ROOT/config/auth_config.php"
+# Ownership splits by who writes the file, because the sticky bit on config/
+# keys off exactly that: only a file's owner may replace it.
+#
+# The admin UI rewrites global_config.json (settings, template assignments) and
+# credentials.json (default and per-host passwords) through saveJsonConfig(),
+# which renames a temporary file over the target -- so www-data has to own them.
+# auth_config.php holds the accounts, the roles and the API token digests, and
+# nothing in the application ever writes it; it stays root's, and +t is what
+# stops www-data replacing it anyway.
+chown www-data:www-data "$ROOT"/config/*.json
+chmod 0640 "$ROOT"/config/*.json
+
+chown root:www-data "$ROOT/config/auth_config.php"
+chmod 0640 "$ROOT/config/auth_config.php"
 
 # --------------------------------------------------------------------------
 # Secrets
@@ -835,7 +861,23 @@ install -d -m 0755 /var/log/kea /var/lib/kea
 if [ -f /etc/kea/kea-dhcp4.conf ] && grep -q "hostdeployer" /etc/kea/kea-dhcp4.conf; then
     skip "/etc/kea/kea-dhcp4.conf already written by this installer"
 else
-    [ -f /etc/kea/kea-dhcp4.conf ] && cp -p /etc/kea/kea-dhcp4.conf "/etc/kea/kea-dhcp4.conf.bak.$(date +%Y%m%d%H%M%S)"
+    # Debian's kea-dhcp4 runs under an AppArmor profile, and the daemon reads
+    # its configuration after dropping to the service user. A file written by
+    # root and left root:root is not necessarily one it may open -- and the
+    # refusal arrives as "Unable to open file", which reads like the file is
+    # missing rather than like a permission problem.
+    #
+    # So keep whatever ownership and mode the package chose, rather than
+    # guessing at them. The shipped file is the authority on what Kea expects.
+    KEA_CONF_OWNER="root:$KEA_GROUP"
+    KEA_CONF_MODE="0640"
+
+    if [ -f /etc/kea/kea-dhcp4.conf ]; then
+        KEA_CONF_OWNER="$(stat -c '%U:%G' /etc/kea/kea-dhcp4.conf)"
+        KEA_CONF_MODE="$(stat -c '%a' /etc/kea/kea-dhcp4.conf)"
+        cp -p /etc/kea/kea-dhcp4.conf "/etc/kea/kea-dhcp4.conf.bak.$(date +%Y%m%d%H%M%S)" \
+            || warn "could not back up the existing kea-dhcp4.conf"
+    fi
 
     PREFIX_LEN=0
     tmp="$MASK_INT"
@@ -857,8 +899,10 @@ else
         --domain "$DOMAIN" \
         > /etc/kea/kea-dhcp4.conf
 
-    chmod 0644 /etc/kea/kea-dhcp4.conf
-    info "wrote /etc/kea/kea-dhcp4.conf for $SUBNET/$PREFIX_LEN on $INTERFACE"
+    # Restored, not invented: see the comment where these were captured.
+    chown "$KEA_CONF_OWNER" /etc/kea/kea-dhcp4.conf || warn "could not set the owner on kea-dhcp4.conf"
+    chmod "$KEA_CONF_MODE" /etc/kea/kea-dhcp4.conf
+    info "wrote /etc/kea/kea-dhcp4.conf for $SUBNET/$PREFIX_LEN on $INTERFACE ($KEA_CONF_OWNER $KEA_CONF_MODE)"
 fi
 
 # An if rather than "|| { retry; die; }": a brace group after the final || is
@@ -911,7 +955,28 @@ check() {
 check "php${PHP_VERSION}-fpm running"   systemctl is-active --quiet "php${PHP_VERSION}-fpm"
 check "nginx running"                   systemctl is-active --quiet nginx
 check "kea-dhcp4-server running"        systemctl is-active --quiet kea-dhcp4-server
-check "the inventory database opens"    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php'; storeLoadHosts();"
+# db() rather than storeLoadHosts(): storeLoadHostsConfig() catches Throwable
+# and returns null, so the wrapper exits 0 whatever went wrong and this check
+# could not fail. It passed on an installation whose database the web server
+# could not open at all -- the failure only surfaced later, as an ERROR line in
+# admin_dashboard.log that nobody was watching for.
+#
+# The write is the part that matters. WAL mode has to create -wal and -shm
+# beside the database, so a directory the web server may read but not write
+# fails here and not at open().
+check "the web server can open and write the inventory" \
+    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php';
+        db()->exec('CREATE TABLE IF NOT EXISTS _install_check (x INTEGER)');
+        db()->exec('DROP TABLE _install_check');"
+
+# The admin UI rewrites both of these, and saveJsonConfig() does it by renaming
+# a temporary file over the target -- which needs write on config/, not on the
+# file. Checked separately because it fails for the same reason as the database
+# and is just as silent: the settings page reports "saved" and nothing changes.
+check "the web server can write the configuration" \
+    sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/utils.php';
+        \$c = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
+        exit(\$c !== null && saveJsonConfig(AUTODEPLOY_GLOBAL_CONFIG, \$c) ? 0 : 1);"
 check "the stored ESXi password decrypts" sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php'; exit(storeLoadCredentials('esxi')['root_password'] === '' ? 1 : 0);"
 check "the dashboard answers on 443"    curl -skf -o /dev/null "https://127.0.0.1/admin/login.php"
 check "the boot chain answers on 80"    bash -c "curl -sf -o /dev/null -w '%{http_code}' 'http://127.0.0.1/boot.ipxe.php?mac=00:00:00:00:00:01' | grep -q 200"
