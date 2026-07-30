@@ -871,6 +871,12 @@ fi
 # Kea creates the socket under a runtime directory whose mode systemd owns.
 # Without the group bit, being in the group is not enough to traverse it.
 install -d -m 0750 -o "$KEA_USER" -g "$KEA_GROUP" /run/kea 2>/dev/null || true
+
+# The one place this path is written. lib/kea.php defaults to the same value
+# and deploy/kea-config.sh puts it in the configuration; all three have to
+# agree or the admin UI talks to a socket nothing is listening on.
+KEA_SOCKET=/run/kea/kea4-ctrl-socket
+
 mkdir -p /etc/systemd/system/kea-dhcp4-server.service.d
 cat > /etc/systemd/system/kea-dhcp4-server.service.d/10-socket-access.conf <<UNIT
 # Let the admin UI reach the control socket. hostdeployer changes DHCP through
@@ -880,6 +886,19 @@ cat > /etc/systemd/system/kea-dhcp4-server.service.d/10-socket-access.conf <<UNI
 RuntimeDirectory=kea
 RuntimeDirectoryMode=0750
 UMask=0007
+
+# UMask alone is not enough. Kea creates the control socket during startup and
+# on Debian 13 it comes out srwxr-x--- whatever the unit asks for -- the group
+# gets r-x, and writing to a socket needs w, so the admin UI got "Permission
+# denied" while every other check passed. The mode is therefore set explicitly
+# once the socket exists.
+#
+# ExecStartPost runs as the service user, which owns the socket, so this needs
+# no privilege of its own. The loop is because the socket appears during
+# startup rather than before it, and the trailing exit 0 keeps a missing socket
+# from failing the unit: DHCP still serves, only editing it from the UI stops
+# working, and that is a degraded appliance rather than a broken one.
+ExecStartPost=/bin/sh -c 'for _ in 1 2 3 4 5 6 7 8 9 10; do if [ -S $KEA_SOCKET ]; then chmod 0770 $KEA_SOCKET; exit 0; fi; sleep 0.5; done; exit 0'
 UNIT
 systemctl daemon-reload
 
