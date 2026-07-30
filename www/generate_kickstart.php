@@ -6,7 +6,7 @@
  * deployment type and fills in per-host network / credential values.
  */
 
-require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/store.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -50,7 +50,7 @@ try {
     ksLog('Kickstart generator started');
 
     $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-    $hostsConfig  = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
+    $hostsConfig  = storeLoadHostsConfig();
 
     if ($globalConfig === null || $hostsConfig === null) {
         ksLog('Configuration loading failed', 'ERROR');
@@ -106,7 +106,7 @@ try {
     }
 
     // The installer may report the chassis serial; record it opportunistically.
-    updateHostLastSeen($clientMac, $_GET['serial'] ?? null);
+    storeTouchHost($clientMac, $_GET['serial'] ?? null);
 
     // Secure boot has to be off for the unsigned installer chain to load.
     if (!empty($globalConfig['security']['secure_boot_enabled'])
@@ -139,7 +139,7 @@ try {
 
     // Root password: host-specific override wins, then the credentials file,
     // then the (deprecated) plaintext value in global_config.json.
-    $esxiCredentials = loadSecureCredentials('esxi', $clientMac);
+    $esxiCredentials = storeLoadCredentials('esxi', $clientMac);
     $rootPassword = $esxiCredentials['root_password']
         ?? $globalConfig['deployment']['esxi_root_password']
         ?? '';
@@ -183,7 +183,7 @@ try {
     $kickstart = renderTemplate($template, $variables);
 
     if ($status === 'approved') {
-        updateHostByMac($clientMac, [
+        storeUpdateHost($clientMac, [
             'deployment_status'  => 'deploying',
             'deployment_started' => date('Y-m-d H:i:s'),
         ]);

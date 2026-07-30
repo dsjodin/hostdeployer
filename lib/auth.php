@@ -3,7 +3,7 @@
  * Authentication, session and CSRF helpers for the ESXi Autodeploy admin.
  */
 
-require_once __DIR__ . '/utils.php';
+require_once __DIR__ . '/store.php';
 
 if (!defined('AUTODEPLOY_AUTH_CONFIG')) {
     define('AUTODEPLOY_AUTH_CONFIG', AUTODEPLOY_CONFIG_DIR . '/auth_config.php');
@@ -298,16 +298,17 @@ function hasRole($userData, $requiredRole) {
 }
 
 /**
- * Check whether the current user holds a permission, per auth_config roles.
+ * Check whether a role holds a permission, per the auth_config role table.
  *
- * @param string $permission Permission name (read, write, approve, scan, settings)
+ * Split out from hasPermission() so the REST API can authorise a bearer
+ * token's role without a session to read it from.
+ *
+ * @param string|null $role       Role name
+ * @param string      $permission Permission name (read, write, approve, scan, settings)
  * @return bool
  */
-function hasPermission($permission) {
-    startAdminSession();
-
-    $role = $_SESSION['role'] ?? null;
-    if ($role === null) {
+function roleHasPermission($role, $permission) {
+    if (!is_string($role) || $role === '') {
         return false;
     }
     if ($role === 'admin') {
@@ -317,7 +318,19 @@ function hasPermission($permission) {
     $authConfig = loadAuthConfig();
     $permissions = $authConfig['roles'][$role]['permissions'] ?? [];
 
-    return in_array($permission, $permissions, true);
+    return is_array($permissions) && in_array($permission, $permissions, true);
+}
+
+/**
+ * Check whether the current session's user holds a permission.
+ *
+ * @param string $permission Permission name (read, write, approve, scan, settings)
+ * @return bool
+ */
+function hasPermission($permission) {
+    startAdminSession();
+
+    return roleHasPermission($_SESSION['role'] ?? null, $permission);
 }
 
 /**

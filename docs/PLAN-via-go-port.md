@@ -7,6 +7,8 @@ med rakt motsatt arkitektur. Sju konkreta saker är värda att hämta hem.
 
 Relaterat: [`CODE-REVIEW.md`](CODE-REVIEW.md) · [`bootchain.md`](bootchain.md)
 
+**Status:** fas 1 och 2 är genomförda. Fas 3–7 återstår.
+
 ---
 
 ## Kontext
@@ -49,7 +51,7 @@ fas en shotgun-ändring genom hela `www/`.
 
 ---
 
-## Fas 1 — Tester och CI
+## Fas 1 — Tester och CI ✅
 
 Säkerhetsnätet måste finnas före refaktoreringarna, inte efter.
 
@@ -85,7 +87,7 @@ eller från API:t. Gör anropet lazy och flytta det till de sidor som behöver d
 
 ---
 
-## Fas 2 — `lib/store.php` + REST-API
+## Fas 2 — `lib/store.php` + REST-API ✅
 
 **Nya filer:** `lib/store.php`, `lib/api_auth.php`, `www/api.php`
 

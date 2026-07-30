@@ -16,7 +16,7 @@ if (!defined('ADMIN_DASHBOARD')) {
  */
 function renderSettingsContent($globalConfig) {
   // Load credentials
-    $credentials = loadSecureCredentials();
+    $credentials = storeLoadCredentials();
     ?>
     <div class="row">
         <div class="col-12 mb-4">
@@ -981,7 +981,7 @@ function processSettingsActions($action, $postData) {
             // Add to processSettingsActions in settings.php
         case 'save_default_credentials':
             // Load existing credentials
-            $credentials = loadSecureCredentials();
+            $credentials = storeLoadCredentials();
             if (!$credentials) {
                 $credentials = [
                     'ilo' => ['hosts' => []],
@@ -1012,7 +1012,7 @@ function processSettingsActions($action, $postData) {
             }
 
             // Save updated credentials (atomically, mode 0640)
-            $savedOk = saveSecureCredentials($credentials);
+            $savedOk = storeSaveCredentials($credentials);
 
             if ($savedOk) {
                 $result['message'] = "Default credentials updated successfully";

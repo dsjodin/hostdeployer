@@ -57,6 +57,26 @@ mkdir -p /srv/autodeploy/esxi/8.0U3
 # montera ISO:n och kopiera innehållet hit (boot.cfg måste finnas)
 ```
 
+### API-token
+
+Python-skripten läser och skriver via REST-API:t i stället för att öppna
+`config/hosts.json` och `config/credentials.json` direkt. När admin-UI:t startar
+en iLO-skanning behöver den processen en token:
+
+```bash
+php /srv/autodeploy/lib/api_auth.php --local
+chown root:www-data /srv/autodeploy/config/api_local_token
+# klistra in den utskrivna 'local-helpers'-posten i config/auth_config.php
+```
+
+För extern automation, skapa en egen token per konsument:
+
+```bash
+php /srv/autodeploy/lib/api_auth.php min-automation operator
+```
+
+Bara digesten hamnar i `auth_config.php` — tappar du token får du skapa en ny.
+
 ### sudo-regel
 
 Admin-UI:t behöver köra DHCP-uppdateringen som root:
@@ -72,6 +92,37 @@ Skriptet validerar alla sina argument själv och tar inga andra kommandon.
 `AUTODEPLOY_ROOT` (miljövariabel, default `/srv/autodeploy`) styr var både
 PHP-koden och Python-skripten letar. Inga IP-adresser finns i koden — allt
 kommer från `config/global_config.json` respektive DHCP (`${next-server}`).
+
+## REST-API
+
+Allt admin-UI:t kan göra går också att automatisera. API:t svarar **bara över
+TLS** — port 80 tillhör bootkedjan, vars klienter är firmware utan credentials,
+och en token ska inte korsa den.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://<server>/api/v1/hosts
+```
+
+| Metod | Väg | Behörighet |
+|---|---|---|
+| `GET` `POST` | `/api/v1/hosts` | read / write |
+| `GET` `PATCH` `DELETE` | `/api/v1/hosts/{mac}` | read / write |
+| `GET` | `/api/v1/hosts/{mac}/status` | read |
+| `POST` | `/api/v1/hosts/{mac}/approve` | approve |
+| `POST` | `/api/v1/hosts/{mac}/reinstall` | approve |
+| `PATCH` | `/api/v1/hosts/{mac}/secure-boot` | write |
+| `POST` | `/api/v1/hosts/discovered` | write |
+| `GET` `PUT` | `/api/v1/credentials/{ilo\|esxi}` | settings |
+| `POST` | `/api/v1/scan` | scan |
+| `GET` | `/api/v1/versions` | read |
+
+MAC-adressen i sökvägen normaliseras, så `00-0C-29-91-CF-EB` och
+`00:0c:29:91:cf:eb` är samma host.
+
+`/credentials` kräver `settings`, som bara `admin` har som standard: den delar
+ut ESXi-rootlösenord. `/hosts/discovered` tar emot resultat från en
+hårdvaruskanning och slår ihop dem serversidan — matchning på serienummer
+först, sedan på känd MAC, och en befintlig `mac_address` skrivs aldrig över.
 
 ## Utveckling
 

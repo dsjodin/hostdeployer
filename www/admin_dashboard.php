@@ -141,7 +141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ---------------------------------------------------------------------------
 
 $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-$hostsConfig = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
+$hostsConfig = storeLoadHostsConfig();
 
 if ($globalConfig === null) {
     dashboard_log('Failed to load global configuration', 'ERROR');

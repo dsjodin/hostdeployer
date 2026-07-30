@@ -7,7 +7,7 @@
  *   2. re-enable secure boot when the deployment turned it off
  */
 
-require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/store.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -63,7 +63,7 @@ try {
 
     deployLog("Processing deployment completion for MAC: $mac");
 
-    $updated = updateHostByMac($mac, [
+    $updated = storeUpdateHost($mac, [
         'deployment_status' => 'deployed',
         'deployment_time'   => date('Y-m-d H:i:s'),
     ]);
@@ -85,7 +85,7 @@ try {
     sleep(10);
 
     if (enableSecureBoot($mac)) {
-        updateHostByMac($mac, ['secure_boot_status' => 'enabled']);
+        storeUpdateHost($mac, ['secure_boot_status' => 'enabled']);
         deployLog("Successfully re-enabled secure boot for $mac");
         exit('SUCCESS: deployment complete and secure boot enabled');
     }

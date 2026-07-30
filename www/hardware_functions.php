@@ -15,8 +15,11 @@ require_once __DIR__ . '/../lib/utils.php';
  * @return array{success: bool, output: string}
  */
 function runIloScanner($timeout = 900) {
+    // The scanner writes its results through the REST API rather than to
+    // hosts.json, so it needs a credential. See lib/api_auth.php --local.
     $command = sprintf(
-        'timeout %d python3 %s 2>&1',
+        '%stimeout %d python3 %s 2>&1',
+        apiLocalTokenEnv(),
         (int)$timeout,
         escapeshellarg(AUTODEPLOY_ROOT . '/scripts/ilo_scanner.py')
     );
@@ -81,36 +84,3 @@ function getMacFromArp($ip) {
     return lookupMacViaArp($ip);
 }
 
-/**
- * Query detailed system information over iLO.
- *
- * @param string $iloIp    iLO IP address
- * @param string $username iLO username
- * @param string $password iLO password
- * @return array|null Decoded system information, or null on failure
- */
-function getSystemInfoViaIlo($iloIp, $username, $password) {
-    if (!isValidIp($iloIp)) {
-        return null;
-    }
-
-    $command = sprintf(
-        'python3 %s --ip %s --user %s --password %s 2>/dev/null',
-        escapeshellarg(AUTODEPLOY_ROOT . '/scripts/ilo_info.py'),
-        escapeshellarg($iloIp),
-        escapeshellarg($username),
-        escapeshellarg($password)
-    );
-
-    $output = [];
-    $returnCode = 1;
-    exec($command, $output, $returnCode);
-
-    if ($returnCode !== 0) {
-        return null;
-    }
-
-    $data = json_decode(implode('', $output), true);
-
-    return is_array($data) ? $data : null;
-}

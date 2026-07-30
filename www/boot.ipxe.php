@@ -7,7 +7,7 @@
  * version's boot.cfg, and points the installer at /ks.cfg.
  */
 
-require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/store.php';
 require_once __DIR__ . '/../lib/bootcfg.php';
 
 ini_set('display_errors', '0');
@@ -77,7 +77,7 @@ ipxeLog("iPXE boot request from MAC: $mac, IP: $clientIP");
 // ---------------------------------------------------------------------------
 
 $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-$hostsConfig  = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG);
+$hostsConfig  = storeLoadHostsConfig();
 
 if ($globalConfig === null || $hostsConfig === null) {
     ipxeLog('Failed to load server configuration', 'ERROR');
@@ -119,18 +119,10 @@ if ($host === null && $autoRegistrationEnabled) {
         'last_seen'          => $now,
     ];
 
-    // Register under a lock and re-check inside it: two NICs of the same
-    // server can hit this endpoint simultaneously and previously produced
-    // duplicate entries (or lost one of the writes entirely).
-    $registered = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use ($mac, $newHost) {
-        foreach ($config['hosts'] as $existing) {
-            if (hostMatchesMac($existing, $mac)) {
-                return false; // Already registered by a concurrent request.
-            }
-        }
-        $config['hosts'][] = $newHost;
-        return true;
-    });
+    // storeAddHost() re-checks for an existing record inside the lock: two
+    // NICs of the same server can hit this endpoint simultaneously and
+    // previously produced duplicate entries (or lost one of the writes).
+    $registered = storeAddHost($newHost);
 
     if ($registered) {
         ipxeLog("Successfully auto-registered host with MAC: $mac");
@@ -151,7 +143,7 @@ if ($host === null && $autoRegistrationEnabled) {
     }
 
     // Re-read so we act on the record that actually landed on disk.
-    $hostsConfig = loadJsonConfig(AUTODEPLOY_HOSTS_CONFIG) ?? $hostsConfig;
+    $hostsConfig = storeLoadHostsConfig() ?? $hostsConfig;
     $host = findHostByMac($mac, $hostsConfig);
 }
 
@@ -287,7 +279,7 @@ $imageUrl = $baseUrl . '/esxi/' . $esxiVersion;
 $ksUrl = $baseUrl . '/ks.cfg?mac=' . $mac;
 
 if ($deploymentStatus === 'approved') {
-    updateHostByMac($mac, [
+    storeUpdateHost($mac, [
         'deployment_status'  => 'deploying',
         'deployment_started' => date('Y-m-d H:i:s'),
     ]);

@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import urllib3
 
+from autodeploy_api import ApiError, AutodeployApi
+
 # iLO ships a self-signed certificate by default, so verification is off and
 # the resulting warning would otherwise be printed once per request.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,7 +24,6 @@ AUTODEPLOY_ROOT = os.environ.get("AUTODEPLOY_ROOT", "/srv/autodeploy")
 CONFIG_DIR = os.path.join(AUTODEPLOY_ROOT, "config")
 LOG_DIR = os.path.join(AUTODEPLOY_ROOT, "logs")
 GLOBAL_CONFIG = os.path.join(CONFIG_DIR, "global_config.json")
-CREDENTIALS = os.path.join(CONFIG_DIR, "credentials.json")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -37,8 +38,9 @@ logging.basicConfig(
 logger = logging.getLogger("ilo_scanner")
 
 # Cached so a 254-address scan does not re-read and re-parse the config once
-# per host (load_hosts_config/save_hosts_config each called it separately).
+# per host.
 _global_config = None
+_api = None
 
 def format_mac(mac):
     """Format MAC address consistently"""
@@ -61,78 +63,30 @@ def load_global_config():
 
     return _global_config
 
-def load_credentials():
-    """Load the iLO section of credentials.json."""
-    try:
-        with open(CREDENTIALS, "r") as f:
-            return json.load(f).get("ilo", {})
-    except Exception as e:
-        logger.error(f"Failed to load credentials from {CREDENTIALS}: {e}")
-        return {}
+def api():
+    """The shared API client, created on first use."""
+    global _api
+
+    if _api is None:
+        _api = AutodeployApi()
+
+    return _api
+
 
 def get_ilo_credentials(mac_address=None):
-    """Return (username, password), preferring host-specific overrides."""
-    ilo_creds = load_credentials()
+    """Return (username, password), preferring host-specific overrides.
 
-    username = ilo_creds.get("admin_user")
-    password = ilo_creds.get("admin_password")
-
-    if mac_address:
-        host_creds = ilo_creds.get("hosts", {}).get(format_mac(mac_address))
-        if host_creds:
-            username = host_creds.get("username", username)
-            password = host_creds.get("password", password)
-            logger.info(f"Using host-specific iLO credentials for {mac_address}")
-
-    return username, password
-
-def hosts_config_path():
-    """Absolute path to hosts.json."""
-    return load_global_config().get("paths", {}).get(
-        "hosts_config", os.path.join(CONFIG_DIR, "hosts.json")
-    )
-
-
-def load_hosts_config():
-    """Load the hosts configuration file"""
-    hosts_path = hosts_config_path()
-    
-    try:
-        if os.path.exists(hosts_path):
-            with open(hosts_path, "r") as f:
-                return json.load(f)
-        else:
-            return {"hosts": []}
-    except Exception as e:
-        logger.error(f"Failed to load hosts config: {e}")
-        return {"hosts": []}
-
-def save_hosts_config(hosts_config):
-    """Write hosts.json atomically.
-
-    The previous version truncated the real file and then wrote into it, so a
-    crash (or a PHP process reading concurrently) could observe a partial or
-    empty host list.
+    The API applies the override, so this no longer has to know that the file
+    stores them under an ilo.hosts.<mac> key.
     """
-    hosts_path = hosts_config_path()
-    tmp_path = f"{hosts_path}.tmp.{os.getpid()}"
+    creds = api().get_credentials("ilo", mac_address)
 
-    try:
-        os.makedirs(os.path.dirname(hosts_path), exist_ok=True)
+    if mac_address and creds:
+        logger.debug(f"Using iLO credentials resolved for {mac_address}")
 
-        with open(tmp_path, "w") as f:
-            json.dump(hosts_config, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
+    return creds.get("admin_user") or creds.get("username"), \
+        creds.get("admin_password") or creds.get("password")
 
-        os.replace(tmp_path, hosts_path)
-        logger.info(f"Hosts configuration saved to {hosts_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to save hosts config: {e}")
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        return False
 
 def check_host_reachable(ip):
     """Check if a host is reachable via ping"""
@@ -535,59 +489,14 @@ def scan_ip_range(start_ip, end_ip, username, password, max_threads=16):
     return results
 
 def update_hosts_config(scan_results):
-    """Merge scan results into hosts.json.
+    """Send scan results to the API, which merges them into the inventory.
 
-    Only hardware-discovered fields are refreshed on an existing host. The
-    previous version also overwrote mac_address, which could silently point an
-    already-approved host at a different NIC.
+    The matching rules -- serial first, then any known MAC, and never
+    overwrite an existing mac_address -- now live in lib/store.php next to the
+    storage and inside its lock.
     """
-    hosts_config = load_hosts_config()
-    hosts_list = hosts_config.setdefault("hosts", [])
-    updated = 0
-    added = 0
+    return api().merge_discovered(scan_results)
 
-    def find_existing(result):
-        serial = result.get("serial_number")
-        mac = format_mac(result.get("mac_address", "")) if result.get("mac_address") != "Unknown" else ""
-
-        for host in hosts_list:
-            # Match on serial first, then on any known MAC.
-            if serial and serial != "Unknown" and host.get("serial_number") == serial:
-                return host
-            if mac:
-                known = [host.get("mac_address", "")] + list(host.get("additional_macs", []))
-                if any(format_mac(k) == mac for k in known if k):
-                    return host
-        return None
-
-    for result in scan_results:
-        existing = find_existing(result)
-
-        if existing is None:
-            hosts_list.append(result)
-            added += 1
-            continue
-
-        # Refresh only what the scan actually discovered.
-        for field in ("ilo_ip", "model", "manufacturer", "bios_version",
-                      "secure_boot_status", "additional_macs"):
-            if result.get(field):
-                existing[field] = result[field]
-
-        if not existing.get("serial_number") and result.get("serial_number") != "Unknown":
-            existing["serial_number"] = result["serial_number"]
-
-        # Adopt the discovered MAC only when the host does not have one yet.
-        if not existing.get("mac_address") and result.get("mac_address") != "Unknown":
-            existing["mac_address"] = result["mac_address"]
-
-        updated += 1
-
-    hosts_config["hosts"] = hosts_list
-    save_hosts_config(hosts_config)
-
-    logger.info(f"Updated {updated} existing hosts and added {added} new hosts")
-    return updated, added
 
 def main():
     """Main entry point"""
@@ -595,7 +504,7 @@ def main():
     parser.add_argument("--start", help="First iLO IP to scan (defaults to global_config.json)")
     parser.add_argument("--end", help="Last iLO IP to scan (defaults to global_config.json)")
     parser.add_argument("--threads", type=int, default=16, help="Concurrent scans (default: 16)")
-    parser.add_argument("--dry-run", action="store_true", help="Scan but do not write hosts.json")
+    parser.add_argument("--dry-run", action="store_true", help="Scan but do not update the inventory")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -613,7 +522,7 @@ def main():
     password = password or ilo_config.get("admin_password")
 
     if not username or not password:
-        logger.error("iLO credentials not found; set ilo.admin_user / ilo.admin_password in credentials.json")
+        logger.error("iLO credentials not found; set them in config/credentials.json under 'ilo'")
         return 1
 
     start_ip = args.start or ilo_config.get("scan_range_start")
@@ -628,7 +537,7 @@ def main():
     scan_results = scan_ip_range(start_ip, end_ip, username, password, max_threads=args.threads)
 
     if args.dry_run:
-        print(f"Scan complete (dry run). Found {len(scan_results)} iLO systems; hosts.json not modified.")
+        print(f"Scan complete (dry run). Found {len(scan_results)} iLO systems; the inventory was not modified.")
         return 0
 
     updated, added = update_hosts_config(scan_results)
@@ -638,4 +547,8 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ApiError as e:
+        logger.error(str(e))
+        sys.exit(1)

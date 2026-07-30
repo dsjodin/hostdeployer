@@ -5,7 +5,7 @@
  * Add / edit / approve / delete / reinstall hosts, plus per-host credentials.
  */
 
-require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/store.php';
 
 /**
  * Persist (or clear) the per-host credential overrides submitted with a form.
@@ -18,7 +18,7 @@ require_once __DIR__ . '/../lib/utils.php';
  * @return bool True when the credentials file was written successfully
  */
 function saveHostCredentialOverrides($mac, array $postData) {
-    $credentials = loadSecureCredentials();
+    $credentials = storeLoadCredentials();
     if (!is_array($credentials)) {
         $credentials = [];
     }
@@ -62,7 +62,7 @@ function saveHostCredentialOverrides($mac, array $postData) {
         unset($credentials['esxi']['hosts'][$mac]);
     }
 
-    return saveSecureCredentials($credentials);
+    return storeSaveCredentials($credentials);
 }
 
 /**
@@ -169,16 +169,12 @@ function processAddHostAction($postData) {
 
     $updatedExisting = false;
 
-    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use (
+    $ok = storeMutateHosts(function (array &$hosts) use (
         $mac, $hostname, $fqdn, $esxiVersion, $deploymentType, $postData, $vmotionIp, $isStandard, &$updatedExisting
     ) {
-        if (!isset($config['hosts']) || !is_array($config['hosts'])) {
-            $config['hosts'] = [];
-        }
-
         $existing = [];
         $existingIndex = -1;
-        foreach ($config['hosts'] as $index => $host) {
+        foreach ($hosts as $index => $host) {
             if (hostMatchesMac($host, $mac)) {
                 $existing = $host;
                 $existingIndex = $index;
@@ -233,10 +229,10 @@ function processAddHostAction($postData) {
         }
 
         if ($existingIndex >= 0) {
-            $config['hosts'][$existingIndex] = $entry;
+            $hosts[$existingIndex] = $entry;
             $updatedExisting = true;
         } else {
-            $config['hosts'][] = $entry;
+            $hosts[] = $entry;
         }
 
         return true;
@@ -273,10 +269,10 @@ function processDeleteHostAction($postData) {
     }
 
     $found = false;
-    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use ($mac, &$found) {
-        foreach ($config['hosts'] as $index => $host) {
+    $ok = storeMutateHosts(function (array &$hosts) use ($mac, &$found) {
+        foreach ($hosts as $index => $host) {
             if (hostMatchesMac($host, $mac)) {
-                array_splice($config['hosts'], $index, 1);
+                array_splice($hosts, $index, 1);
                 $found = true;
                 break;
             }
@@ -296,10 +292,10 @@ function processDeleteHostAction($postData) {
 
     // Drop any credential overrides so they cannot leak to a future host
     // that happens to reuse the MAC.
-    $credentials = loadSecureCredentials();
+    $credentials = storeLoadCredentials();
     if (is_array($credentials)) {
         unset($credentials['ilo']['hosts'][$mac], $credentials['esxi']['hosts'][$mac]);
-        saveSecureCredentials($credentials);
+        storeSaveCredentials($credentials);
     }
 
     logMessage("Deleted host $mac");
@@ -335,7 +331,7 @@ function processSecureBootAction($postData) {
 
     // secure_boot_manager.py already records the new status; refresh it here
     // too so the dashboard is correct even if the script's write raced.
-    updateHostByMac($mac, ['secure_boot_status' => $enable ? 'enabled' : 'disabled']);
+    storeUpdateHost($mac, ['secure_boot_status' => $enable ? 'enabled' : 'disabled']);
 
     $result['message'] = 'Secure boot ' . ($enable ? 'enabled' : 'disabled') . " for host with MAC '$mac'";
 
@@ -382,10 +378,10 @@ function processApproveHostAction($postData) {
     $vmotionIp = trim((string)($postData['vmotion_ip'] ?? ''));
 
     $found = false;
-    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use (
+    $ok = storeMutateHosts(function (array &$hosts) use (
         $mac, $hostname, $fqdn, $deploymentType, $postData, $vmotionIp, &$found
     ) {
-        foreach ($config['hosts'] as &$host) {
+        foreach ($hosts as &$host) {
             if (!hostMatchesMac($host, $mac)) {
                 continue;
             }
@@ -460,8 +456,8 @@ function processReinstallHostAction($postData) {
     }
 
     $found = false;
-    $ok = updateJsonConfig(AUTODEPLOY_HOSTS_CONFIG, function (array &$config) use ($mac, &$found) {
-        foreach ($config['hosts'] as &$host) {
+    $ok = storeMutateHosts(function (array &$hosts) use ($mac, &$found) {
+        foreach ($hosts as &$host) {
             if (!hostMatchesMac($host, $mac)) {
                 continue;
             }

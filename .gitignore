@@ -26,3 +26,6 @@ templates/backups/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local API token for the helper scripts
+config/api_local_token
