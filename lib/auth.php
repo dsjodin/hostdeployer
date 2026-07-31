@@ -333,6 +333,153 @@ function hasPermission($permission) {
     return roleHasPermission($_SESSION['role'] ?? null, $permission);
 }
 
+// ---------------------------------------------------------------------------
+// Login throttling
+// ---------------------------------------------------------------------------
+//
+// The counter used to live in $_SESSION, so a client that did not send the
+// cookie back got a fresh session -- and therefore a fresh counter -- on every
+// attempt. curl without a cookie jar does that by default, which meant the
+// throttle only ever slowed down a browser, and a browser is not what anyone
+// brute forces a login with.
+//
+// Two keys per attempt. The address key is what stops one machine working
+// through a wordlist; the username key is what stops a distributed attempt
+// working through one account. They are counted separately because they fail
+// for different reasons and only one of them is safe to talk about: saying "too
+// many attempts from this address" reveals nothing, while saying "this account
+// is locked" tells the asker the account exists.
+
+if (!defined('AUTODEPLOY_LOGIN_MAX_FAILURES')) {
+    define('AUTODEPLOY_LOGIN_MAX_FAILURES', 5);
+}
+if (!defined('AUTODEPLOY_LOGIN_MAX_LOCK')) {
+    define('AUTODEPLOY_LOGIN_MAX_LOCK', 900); // 15 minutes
+}
+
+/**
+ * The two rows an attempt touches.
+ *
+ * @param string $username Supplied username
+ * @param string $ip       Client address
+ * @return array{user: string, ip: string}
+ */
+function authThrottleSubjects($username, $ip) {
+    // Lower-cased so "Admin" and "admin" share a counter, and length-bounded so
+    // a long username cannot be used to fill the table.
+    return [
+        'user' => 'user:' . substr(strtolower(trim((string)$username)), 0, 64),
+        'ip'   => 'ip:' . substr((string)$ip, 0, 64),
+    ];
+}
+
+/**
+ * How long the caller must wait, and whether it is safe to say why.
+ *
+ * Returns 0 when the attempt may proceed. A database that cannot be reached
+ * fails open, with an error in the log: the inventory lives in the same file,
+ * so an appliance that cannot read it is already not working, and locking the
+ * operator out of the one page that could tell them so helps nobody.
+ *
+ * @param string $username Supplied username
+ * @param string $ip       Client address
+ * @return array{wait: int, by_address: bool}
+ */
+function authThrottleStatus($username, $ip) {
+    $result = ['wait' => 0, 'by_address' => false];
+
+    try {
+        $subjects = authThrottleSubjects($username, $ip);
+        $statement = db()->prepare(
+            'SELECT subject, locked_until FROM login_attempts WHERE subject IN (?, ?)'
+        );
+        $statement->execute([$subjects['user'], $subjects['ip']]);
+
+        $now = time();
+        foreach ($statement->fetchAll() as $row) {
+            $remaining = (int)$row['locked_until'] - $now;
+            if ($remaining <= 0) {
+                continue;
+            }
+
+            if ($remaining > $result['wait']) {
+                $result['wait'] = $remaining;
+            }
+            if ($row['subject'] === $subjects['ip']) {
+                $result['by_address'] = true;
+            }
+        }
+    } catch (Throwable $e) {
+        auth_log('Could not read the login throttle: ' . $e->getMessage(), 'ERROR');
+    }
+
+    return $result;
+}
+
+/**
+ * Record a failed attempt against both keys.
+ *
+ * @param string $username Supplied username
+ * @param string $ip       Client address
+ */
+function authThrottleFail($username, $ip) {
+    try {
+        $pdo = db();
+        $now = time();
+
+        $statement = $pdo->prepare(
+            'INSERT INTO login_attempts (subject, failures, locked_until, updated)
+             VALUES (:subject, 1, 0, :now)
+             ON CONFLICT(subject) DO UPDATE SET failures = failures + 1, updated = :now'
+        );
+        $lock = $pdo->prepare(
+            'UPDATE login_attempts SET locked_until = :until WHERE subject = :subject'
+        );
+        $read = $pdo->prepare('SELECT failures FROM login_attempts WHERE subject = ?');
+
+        foreach (authThrottleSubjects($username, $ip) as $subject) {
+            $statement->execute(['subject' => $subject, 'now' => $now]);
+
+            $read->execute([$subject]);
+            $failures = (int)$read->fetchColumn();
+
+            if ($failures >= AUTODEPLOY_LOGIN_MAX_FAILURES) {
+                // Doubling from 30 seconds, capped. Long enough that a wordlist
+                // is not worth running, short enough that an operator who
+                // mistyped their password is not locked out for the evening.
+                $delay = min(
+                    AUTODEPLOY_LOGIN_MAX_LOCK,
+                    30 * (2 ** min(10, $failures - AUTODEPLOY_LOGIN_MAX_FAILURES))
+                );
+                $lock->execute(['until' => $now + (int)$delay, 'subject' => $subject]);
+            }
+        }
+
+        // Rows nobody has touched for a day are of no further use, and this is
+        // the only place that writes often enough to notice.
+        $pdo->prepare('DELETE FROM login_attempts WHERE updated < ? AND locked_until < ?')
+            ->execute([$now - 86400, $now]);
+    } catch (Throwable $e) {
+        auth_log('Could not record a failed login: ' . $e->getMessage(), 'ERROR');
+    }
+}
+
+/**
+ * Clear both keys after a successful authentication.
+ *
+ * @param string $username Supplied username
+ * @param string $ip       Client address
+ */
+function authThrottleReset($username, $ip) {
+    try {
+        $subjects = authThrottleSubjects($username, $ip);
+        db()->prepare('DELETE FROM login_attempts WHERE subject IN (?, ?)')
+            ->execute([$subjects['user'], $subjects['ip']]);
+    } catch (Throwable $e) {
+        auth_log('Could not clear the login throttle: ' . $e->getMessage(), 'ERROR');
+    }
+}
+
 /**
  * Generate a password hash for auth_config.php.
  *

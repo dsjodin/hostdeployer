@@ -61,6 +61,16 @@ try {
         exit('ERROR: missing MAC address parameter');
     }
 
+    // Marking a host deployed is what stops it installing: boot.ipxe.php sends
+    // a deployed host to its local disk. Anything on the network could do that
+    // to any host it could name, and the result looked like an installation
+    // that hung rather than one that was interfered with.
+    if (!storeVerifyBootToken($mac, (string)($_GET['t'] ?? ''))) {
+        http_response_code(403);
+        deployLog("Completion reported for $mac with a missing or invalid boot token", 'WARNING');
+        exit('ERROR: not authorised');
+    }
+
     deployLog("Processing deployment completion for MAC: $mac");
 
     $updated = storeUpdateHost($mac, [
@@ -77,6 +87,12 @@ try {
     }
 
     deployLog("Host $mac marked as deployed");
+
+    // The deployment is over, so the token that belonged to it is retired. A
+    // host that is reinstalled goes through the boot chain again and is issued
+    // a new one; nothing that was left in a log or a %firstboot script keeps
+    // working afterwards.
+    storeClearBootToken($mac);
 
     if (empty($globalConfig['security']['secure_boot_enabled'])) {
         deployLog("Secure boot is disabled in global config, skipping for $mac");

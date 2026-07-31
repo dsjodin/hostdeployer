@@ -105,6 +105,24 @@ try {
         ksAbort('This server is not approved for deployment', ["MAC: $clientMac", "Status: $status"]);
     }
 
+    // Past this point the response carries the ESXi root password hash, so the
+    // caller has to present the token the server put in the ks= URL when it
+    // handed this host something to boot. A MAC address on its own is not a
+    // credential: it is in every ARP table on the segment.
+    //
+    // Checked after the pending branch above, which renders the waiting
+    // template -- that one holds nothing worth protecting, and a host waiting
+    // for approval has not been given a token yet.
+    $bootToken = (string)($_GET['t'] ?? '');
+    if (!storeVerifyBootToken($clientMac, $bootToken)) {
+        ksLog("Kickstart requested for $clientMac with a missing or invalid boot token", 'WARNING');
+        ksAbort(
+            'This request is not authorised',
+            ["MAC: $clientMac", 'Reboot the host so the deployment server issues a new token.'],
+            403
+        );
+    }
+
     // The installer may report the chassis serial; record it opportunistically.
     storeTouchHost($clientMac, $_GET['serial'] ?? null);
 
@@ -167,6 +185,12 @@ try {
         'SERVER_URL'         => rtrim((string)($globalConfig['webserver']['url'] ?? "http://$serverIp"), '/'),
         'MAC_ADDRESS'        => $clientMac,
         'DATASTORE_NAME'     => $hostConfig['datastore']['name'] ?? 'datastore1',
+        // Carried into %firstboot so the progress beacon and the completion
+        // callback can present it too. Those endpoints write to the inventory,
+        // and until now anything on the network could call them: marking a host
+        // deployed stops its installation, and the operator sees a host that
+        // hung rather than one that was interfered with.
+        'BOOT_TOKEN'         => $bootToken,
     ];
 
     // vMotion is only rendered when the host actually has an address for it.

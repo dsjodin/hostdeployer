@@ -137,6 +137,7 @@ final class TemplateTest extends TestCase
             'FQDN'               => 'esxi-01.example.com',
             'SERVER_URL'         => 'http://10.0.0.2',
             'MAC_ADDRESS'        => '00:0c:29:91:cf:eb',
+            'BOOT_TOKEN'         => str_repeat('a', 64),
             'VMOTION_CONFIGURED' => false,
         ]);
 

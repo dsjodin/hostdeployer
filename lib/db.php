@@ -112,6 +112,8 @@ if (!function_exists('dbCreateSchema')) {
                 deployment_started  TEXT,
                 deployment_time     TEXT,
                 reinstall_requested TEXT,
+                boot_token          TEXT,
+                boot_token_expires  INTEGER NOT NULL DEFAULT 0,
                 extra               TEXT    NOT NULL DEFAULT '{}'
             )
 SQL);
@@ -126,10 +128,59 @@ SQL);
             )
 SQL);
 
+        // Failed logins, keyed by username and by source address separately.
+        // In the session, which is where this counter used to live, it was
+        // reset by any client that declined to send the cookie back -- so the
+        // throttle only ever slowed down a browser.
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                subject      TEXT PRIMARY KEY,
+                failures     INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER NOT NULL DEFAULT 0,
+                updated      INTEGER NOT NULL DEFAULT 0
+            )
+SQL);
+
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_host_macs_host ON host_macs(host_mac)');
         // The scanner matches on serial before MAC, so that lookup is indexed too.
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_hosts_serial ON hosts(serial_number)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_hosts_status ON hosts(deployment_status)');
+
+        dbAddMissingColumns($pdo);
+    }
+}
+
+if (!function_exists('dbAddMissingColumns')) {
+    /**
+     * Add columns a later version introduced to a database that predates them.
+     *
+     * CREATE TABLE IF NOT EXISTS does nothing to a table that already exists,
+     * so a new column reaches a fresh install and no other. Checked against
+     * PRAGMA table_info rather than tracked with a version number: there are a
+     * handful of columns, the check is exact, and a schema version is one more
+     * thing that can disagree with the schema.
+     *
+     * @param PDO $pdo Connection
+     */
+    function dbAddMissingColumns(PDO $pdo) {
+        $existing = [];
+        foreach ($pdo->query('PRAGMA table_info(hosts)') as $column) {
+            $existing[$column['name']] = true;
+        }
+
+        // Added when the boot chain stopped handing the ESXi root password
+        // hash to anything that could name a MAC. See storeIssueBootToken().
+        $added = [
+            'boot_token'         => 'TEXT',
+            'boot_token_expires' => 'INTEGER NOT NULL DEFAULT 0',
+        ];
+
+        foreach ($added as $name => $definition) {
+            if (!isset($existing[$name])) {
+                $pdo->exec("ALTER TABLE hosts ADD COLUMN $name $definition");
+                logMessage("Added the hosts.$name column");
+            }
+        }
     }
 }
 

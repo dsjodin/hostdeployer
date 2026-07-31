@@ -10,26 +10,48 @@ nedan, nu med en konkret design.
 
 Sorterat efter allvarlighetsgrad. Varje fynd har en föreslagen åtgärd.
 
-| # | Fynd | Grad |
-|---|---|---|
-| [S1](#s1) | `/ks.cfg` lämnar ut ESXi-rootlösenordets hash oautentiserat | **Kritisk** |
-| [S2](#s2) | Admin-UI:t gör ingen behörighetskontroll alls | **Kritisk** |
-| [S3](#s3) | Oautentiserade tillståndsändringar i bootkedjan | **Hög** |
-| [S4](#s4) | `deployment_complete.php` sover 10 s per request → DoS | **Hög** |
-| [S5](#s5) | Loginformuläret verifierar aldrig CSRF-token | **Hög** |
-| [S6](#s6) | Brute force-skyddet ligger i sessionen och kringgås trivialt | **Hög** |
-| [S7](#s7) | Admin-UI och API exponeras på provisioneringsnätet | **Medel** |
-| [S8](#s8) | `local-helpers`-token har admin-roll och ligger läsbar för www-data | **Medel** |
-| [S9](#s9) | Hjälpar-token passerar genom ett shell-kommando | **Medel** |
-| [S10](#s10) | `is_uploaded_file()` saknas i ISO-uppladdningen | **Medel** |
-| [S11](#s11) | ISO-extrahering av opålitligt arkiv utan sandlåda | **Medel** |
-| [S12](#s12) | Klartextlösenord kvar som fallback i `global_config.json` | **Medel** |
-| [S13](#s13) | `get_log.php` saknar behörighetskontroll | **Låg** |
-| [S14](#s14) | CSP tillåter `unsafe-inline` för script | **Låg** |
-| [S15](#s15) | `alias` med regex-capture på `/esxi/` | **Låg** |
-| [S16](#s16) | Obegränsad e-post vid autoregistrering | **Låg** |
-| [S17](#s17) | Ingen absolut sessionslivslängd | **Låg** |
-| [S18](#s18) | Timing-utjämningen i `verifyCredentials()` är sprö | **Info** |
+| # | Fynd | Grad | Status |
+|---|---|---|---|
+| [S1](#s1) | `/ks.cfg` lämnar ut ESXi-rootlösenordets hash oautentiserat | **Kritisk** | **åtgärdad** |
+| [S2](#s2) | Admin-UI:t gör ingen behörighetskontroll alls | **Kritisk** | öppen |
+| [S3](#s3) | Oautentiserade tillståndsändringar i bootkedjan | **Hög** | **åtgärdad** |
+| [S4](#s4) | `deployment_complete.php` sover 10 s per request → DoS | **Hög** | öppen |
+| [S5](#s5) | Loginformuläret verifierar aldrig CSRF-token | **Hög** | **åtgärdad** |
+| [S6](#s6) | Brute force-skyddet ligger i sessionen och kringgås trivialt | **Hög** | **åtgärdad** |
+| [S7](#s7) | Admin-UI och API exponeras på provisioneringsnätet | **Medel** | öppen |
+| [S8](#s8) | `local-helpers`-token har admin-roll och ligger läsbar för www-data | **Medel** | öppen |
+| [S9](#s9) | Hjälpar-token passerar genom ett shell-kommando | **Medel** | öppen |
+| [S10](#s10) | `is_uploaded_file()` saknas i ISO-uppladdningen | **Medel** | **åtgärdad** |
+| [S11](#s11) | ISO-extrahering av opålitligt arkiv utan sandlåda | **Medel** | öppen |
+| [S12](#s12) | Klartextlösenord kvar som fallback i `global_config.json` | **Medel** | öppen |
+| [S13](#s13) | `get_log.php` saknar behörighetskontroll | **Låg** | **åtgärdad** |
+| [S14](#s14) | CSP tillåter `unsafe-inline` för script | **Låg** | öppen |
+| [S15](#s15) | `alias` med regex-capture på `/esxi/` | **Låg** | öppen |
+| [S16](#s16) | Obegränsad e-post vid autoregistrering | **Låg** | öppen |
+| [S17](#s17) | Ingen absolut sessionslivslängd | **Låg** | öppen |
+| [S18](#s18) | Timing-utjämningen i `verifyCredentials()` är sprö | **Info** | öppen |
+
+> ### Migrering efter S1/S3 — läs innan uppgradering
+>
+> Bootkedjan kräver nu en token. Två saker slutar fungera tyst annars:
+>
+> 1. **Egna och redigerade kickstart-mallar.** De levererade mallarna har fått
+>    `&t={{BOOT_TOKEN}}` på anropen till `progress.php` och
+>    `deployment_complete.php`. En mall som redigerats eller laddats upp genom
+>    admin-UI:t har det inte, och `install.sh` rör aldrig en befintlig mall — så
+>    dess hostar installeras klart och fastnar sedan på "deploying", eftersom
+>    slutcallbacken avvisas med 403.
+>
+>    ```bash
+>    cd /srv/autodeploy/templates
+>    sed -i 's#\(progress\.php?mac={{MAC_ADDRESS}}\)#\1\&t={{BOOT_TOKEN}}#;
+>            s#\(deployment_complete\.php?mac={{MAC_ADDRESS}}\)#\1\&t={{BOOT_TOKEN}}#' *.cfg
+>    grep -n 'BOOT_TOKEN' *.cfg      # varje curl-rad ska ha den
+>    ```
+>
+> 2. **Installationer som pågår vid uppgraderingen.** Deras kickstart hämtades
+>    innan tokens fanns. Boota om dem så går de genom bootkedjan igen och får
+>    en token.
 
 ---
 
@@ -791,19 +813,25 @@ omskrivning:
 
 ## Föreslagen ordning
 
+Genomfört, i den ordning det gjordes:
+
+| Fynd | Vad som ändrades |
+|---|---|
+| [S5](#s5) | `verifyCsrfToken()` som första gren i `www/login.php` |
+| [S13](#s13) | `hasPermission('read')` i `www/get_log.php` |
+| [S10](#s10) | `is_uploaded_file()` före `imageInstall()` i `www/api.php` |
+| [S6](#s6) | `login_attempts`-tabell + `authThrottle*()` i `lib/auth.php`; `tests/LoginThrottleTest.php` |
+| [S1](#s1)+[S3](#s3) | `boot_token`-kolumner, `storeIssueBootToken()`/`storeVerifyBootToken()`/`storeClearBootToken()`, token krävd av `/ks.cfg`, `progress.php` och `deployment_complete.php`; `tests/BootTokenTest.php` |
+
+Kvar, i ordning efter värde per insats:
+
 | Steg | Fynd | Insats |
 |---|---|---|
-| 1 | [S5](#s5) CSRF på login | fem rader |
-| 2 | [S13](#s13) behörighet på `get_log.php` | fyra rader |
-| 3 | [S10](#s10) `is_uploaded_file()` | en rad |
-| 4 | [S2](#s2) behörighetstabell i dashboarden | en tabell + en `if`, plus ett test |
-| 5 | [S6](#s6) serversidig login-strypning | en tabell, en funktion |
-| 6 | [S7](#s7) nätverksbindningar | se `network-segmentation.md` |
-| 7 | [S4](#s4) asynkron secure boot | en systemd-timer, ett litet skript |
-| 8 | [S1](#s1)+[S3](#s3) engångstoken i bootkedjan | två kolumner, två funktioner, fyra anropsställen |
-| 9 | [S8](#s8), [S9](#s9), [S11](#s11), [S12](#s12) | var för sig avgränsade |
-| 10 | [S14](#s14)–[S18](#s18) | härdning, ingen brådska |
+| 1 | [S2](#s2) behörighetstabell i dashboarden | en tabell + en `if`, plus ett test |
+| 2 | [S7](#s7) nätverksbindningar | se `network-segmentation.md` |
+| 3 | [S4](#s4) asynkron secure boot | en systemd-timer, ett litet skript |
+| 4 | [S8](#s8), [S9](#s9), [S11](#s11), [S12](#s12) | var för sig avgränsade |
+| 5 | [S14](#s14)–[S18](#s18) | härdning, ingen brådska |
 
-Steg 1-3 är enradiga och kan gå in direkt. Steg 4 är det som ger mest per
-insats: det stänger en väg till RCE på hela estatet och koden som behövs finns
-redan.
+Steg 1 är nu det som ger mest per insats: det stänger den kvarvarande vägen till
+RCE på hela estatet, och koden som behövs står redan skriven i [S2](#s2).
