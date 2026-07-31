@@ -12,32 +12,39 @@ genomgående *varför* något är som det är i stället för att upprepa vad ko
 säger. Det är ovanligt, och det är den egenskapen granskningen nedan försöker
 bevara.
 
-17 testfiler, PHPStan nivå 5, shellcheck och ruff i CI. Grunden finns.
+23 testfiler, PHPStan nivå 5, shellcheck och ruff i CI. Grunden finns.
 
 Statuskolumnen stämdes av mot koden 2026-07-31 och underhålls därefter.
 
 | # | Fynd | Grad | Status |
 |---|---|---|---|
-| [C1](#c1) | `storeMutateHosts()` skriver om hela inventariet vid varje ändring | Hög | Öppen |
-| [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög | Öppen |
-| [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel | Öppen |
+| [C1](#c1) | `storeMutateHosts()` skriver om hela inventariet vid varje ändring | Hög | **Åtgärdad** |
+| [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög | **Åtgärdad** |
+| [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel | **Åtgärdad** |
 | [C4](#c4) | `apiRespondToActionResult()` läser en nyckel som inte alltid finns | Medel | **Åtgärdad** |
-| [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel | Öppen |
-| [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel | Öppen |
-| [C7](#c7) | `imageDirectorySize()` statar hela ESXi-trädet vid varje rendering | Medel | Öppen |
-| [C8](#c8) | Saknade `??` ger `Undefined array key`-varningar i admin-UI:t | Låg | Öppen |
-| [C9](#c9) | Tre implementationer av filstorleksformatering | Låg | Öppen |
-| [C10](#c10) | `www/templates.php` är 1772 rader | Låg | Öppen |
-| [C11](#c11) | Död kod i `login.php` | Låg | Öppen |
-| [C12](#c12) | `switch`-fall som förlitar sig på att `apiRespond()` avslutar | Låg | Öppen |
-| [C13](#c13) | Spårfiler i repot: `tree.txt`, dubblerad `boot.cfg` | Låg | Delvis |
-| [C14](#c14) | PHP-versionen: 8.1 i CI, 8.4 hårdkodad i install.sh | Låg | Öppen |
+| [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel | **Åtgärdad** |
+| [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel | **Åtgärdad** |
+| [C7](#c7) | `imageDirectorySize()` statar hela ESXi-trädet vid varje rendering | Medel | **Åtgärdad** |
+| [C8](#c8) | Saknade `??` ger `Undefined array key`-varningar i admin-UI:t | Låg | **Åtgärdad** |
+| [C9](#c9) | Tre implementationer av filstorleksformatering | Låg | **Åtgärdad** |
+| [C10](#c10) | `www/templates.php` är 1772 rader | Låg | **Åtgärdad** |
+| [C11](#c11) | Död kod i `login.php` | Låg | **Åtgärdad** |
+| [C12](#c12) | `switch`-fall som förlitar sig på att `apiRespond()` avslutar | Låg | **Åtgärdad** |
+| [C13](#c13) | Spårfiler i repot: `tree.txt`, dubblerad `boot.cfg` | Låg | **Åtgärdad** |
+| [C14](#c14) | PHP-versionen: 8.1 i CI, 8.4 hårdkodad i install.sh | Låg | **Åtgärdad** |
 | [C15](#c15) | Testerna täcker inga säkerhetsgränser | Medel | **Åtgärdad** |
 
 ---
 
 <a id="c1"></a>
 ## C1. `storeMutateHosts()` skriver om hela inventariet vid varje ändring
+
+> **Åtgärdad** i 5ebc891. De fyra anroparna går mot `storeUpdateHost()`,
+> `storeAddHost()` och `storeDeleteHost()`. Uppmätt på ett inventarium med 500
+> hostar gick ett godkännande från 48,7 ms till 0,51 ms.
+> `storeUpsertHostRow()` skriver om `host_macs` bara när listan ändrats.
+> `storeMutateHosts()` behåller sin enda verkliga anropare,
+> `storeMergeDiscoveredHosts()`.
 
 `lib/store.php:348-388`
 
@@ -113,6 +120,12 @@ bara vid skillnad.
 <a id="c2"></a>
 ## C2. Bootendpoints läser hela inventariet trots indexerad uppslagning
 
+> **Åtgärdad** i 5ebc891. Båda endpoints använder `storeFindHost()`. Den
+> skillnad som fanns kvar att lösa — att `storeFindHost()` svarar `null` både
+> för "okänd host" och "databasen går inte att öppna" — täcks av
+> `storeIsReachable()`, som ersätter läsningen av hela inventariet enbart för
+> att se om läsningen fungerade.
+
 `www/boot.ipxe.php:80,91,146-147` och `www/generate_kickstart.php:53,74`
 
 ```php
@@ -147,6 +160,9 @@ inläst.
 
 <a id="c3"></a>
 ## C3. Två vägar att radera en host, med olika sidoeffekter
+
+> **Åtgärdad** i 5ebc891. `processDeleteHostAction()` anropar
+> `storeDeleteHost()`, och den inline-kopierade credential-städningen är borta.
 
 `lib/store.php:498-530` (`storeDeleteHost()`) och
 `www/host_functions.php:262-305` (`processDeleteHostAction()`)
@@ -213,6 +229,12 @@ som var och en råkar returnera nästan samma sak.
 <a id="c5"></a>
 ## C5. Tre olika listor över var `boot.cfg` kan ligga
 
+> **Åtgärdad** i f0915ae. `bootCfgCandidates()`, `bootLoaderCandidates()` och
+> resolvarna i `lib/bootcfg.php` svarar för alla sex anropsställen.
+> `BootImageLayoutTest` formulerar buggen som ett test: uppladdningens
+> godkännande och UI:ts tillgänglighet måste svara lika för samma media, i
+> alla tre layouter.
+
 | Fil | Kandidater |
 |---|---|
 | `lib/images.php:180` | `boot.cfg`, `BOOT.CFG`, `efi/boot/boot.cfg` |
@@ -253,6 +275,15 @@ och fyra anropsställen som använder den.
 <a id="c6"></a>
 ## C6. Uppladdade mallar valideras inte mot generatorns tokenlista
 
+> **Åtgärdad** i f0915ae. `templateUnknownTokens()` i `lib/templates.php` är
+> enda implementationen; UI:t varnar vid varje spara och uppladdning, och CI
+> anropar samma funktion. Listan den kontrollerar mot är *härledd* ur
+> `kickstartVariables()` och `waitingTemplateVariables()` — båda grenarna av
+> vMotion-villkoret — i stället för handhållen, så den kan inte bli inaktuell
+> just när en token läggs till. Namn i `{{IF NAME}}` kontrolleras också, vilket
+> shell-varianten inte gjorde: `processConditionals()` läser ett okänt namn som
+> falskt, så en felstavad villkorsvariabel renderar tyst fel gren.
+
 CI-jobbet `templates` (`.github/workflows/ci.yml`) kontrollerar att varje
 `{{TOKEN}}` i `templates/*.cfg` faktiskt sätts av `generate_kickstart.php`.
 Motiveringen står i jobbet: *"A kickstart that reaches a host with an
@@ -290,6 +321,11 @@ tokens som inte kommer att fyllas i.
 <a id="c7"></a>
 ## C7. `imageDirectorySize()` statar hela ESXi-trädet vid varje rendering
 
+> **Åtgärdad** i 0a870dd. Storleken skrivs av `imageRegister()` och läses ur
+> konfigurationen. `present` och `bootable` kontrolleras fortfarande live.
+> `imageRefreshSize()` och en Recount-knapp i settings är den explicita
+> omräkningen.
+
 `lib/images.php:381-399`, anropad från `imageList():366`
 
 Ett uppackat ESXi-media är ~500 filer. `imageList()` går igenom dem alla, per
@@ -314,6 +350,9 @@ Behåll `imageDirectorySize()` för en explicit "räkna om"-knapp. `present` och
 
 <a id="c8"></a>
 ## C8. Saknade `??` ger `Undefined array key`-varningar
+
+> **Åtgärdad** i 0a870dd, utom `configValue()`-helpern, som rör ett tjugotal
+> anropsställen och hör hemma i en egen ändring.
 
 `global_config.json` skriven av `install.sh:381-427` innehåller inte alla nycklar
 som UI:t läser oskyddat:
@@ -346,6 +385,8 @@ uppslagningar med tre nivåers `??` på ett tjugotal ställen.
 <a id="c9"></a>
 ## C9. Tre implementationer av filstorleksformatering
 
+> **Åtgärdad** i 0a870dd. `getReadableFileSize()` överlevde.
+
 | Funktion | Fil | Enheter |
 |---|---|---|
 | `getReadableFileSize()` | `lib/utils.php:827` | B…PB, `log()`-baserad |
@@ -362,6 +403,11 @@ Behåll `getReadableFileSize()`. Ta bort de två andra och byt anropsställena.
 
 <a id="c10"></a>
 ## C10. `www/templates.php` är 1772 rader
+
+> **Åtgärdad** i 1c131a4, enligt uppdelningen nedan. 1772 rader → 740.
+> `enhanceTemplateEditor()` togs bort i stället för att flyttas: 110 rader
+> JavaScript som ingenting anropade. Två buggar som de nya testerna hittade
+> är också rättade — se commit-meddelandet.
 
 Redan noterat som punkt 7 i den förra granskningens "Kvar att göra", och
 fortfarande den största filen i trädet. Den innehåller:
@@ -380,7 +426,10 @@ noga — sökvägsvalideringen — ligger begravd överst.
 
 Tre filer:
 
-* `lib/templates.php` — `isValidTemplateName()`, `isValidBackupName()`,
+* `lib/templates.php` — finns sedan [C6](#c6), med `kickstartVariables()`,
+  `waitingTemplateVariables()`, `templateVariableNames()` och
+  `templateUnknownTokens()`. Hit flyttas `isValidTemplateName()`,
+  `isValidBackupName()`,
   `resolveTemplatePath()`, `resolveBackupPath()`, `templateNameFromBackup()`,
   `getTemplateFiles()`, `saveTemplateFile()`, `backupTemplateFile()`,
   `restoreTemplateFromBackup()`, `createTemplate()`. Testbart, och naturligt hem
@@ -395,6 +444,8 @@ Tre filer:
 
 <a id="c11"></a>
 ## C11. Död kod i `login.php`
+
+> **Åtgärdad** i 0a870dd.
 
 `www/login.php:65-72`
 
@@ -419,6 +470,10 @@ Ta bort.
 
 <a id="c12"></a>
 ## C12. `switch`-fall som förlitar sig på att `apiRespond()` avslutar
+
+> **Åtgärdad** i 0a870dd med `never`-returtypen, som både PHP och PHPStan
+> förstår. Den hittade direkt fyra `case` som *också* hade ett `break` —
+> oåtkomligt i samtliga — så filen är nu konsekvent.
 
 `www/api.php:267-298`
 
@@ -470,6 +525,10 @@ ligger där ett riktigt media skulle ligga och kommenteras därefter. Lägg till
 
 <a id="c14"></a>
 ## C14. PHP-versionen är tre olika saker
+
+> **Åtgärdad** i 0a870dd. Föredrar 8.4, tar annars den nyaste installerade
+> FPM:en, faller tillbaka på 8.4 när ingen PHP finns, och vägrar under 8.1.
+> Kontrollerad mot nio uppsättningar, inklusive 8.10 mot 8.3.
 
 | Ställe | Säger |
 |---|---|
@@ -550,11 +609,17 @@ Tre filer:
 | Prio | Fynd | Varför nu |
 |---|---|---|
 | P1 | [C15](#c15) | förutsättning för säkerhetsåtgärderna — **klar** |
-| P1 | [C1](#c1), [C2](#c2), [C3](#c3) | prestanda som växer med estatets storlek; låser bootande hostar |
-| P2 | [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare |
-| P2 | [C7](#c7) | märks vid varje sidladdning på ett estat med flera versioner |
-| P3 | [C8](#c8)–[C14](#c14) | städning; ingen brådska, men billigt |
+| P1 | [C1](#c1), [C2](#c2), [C3](#c3) | prestanda som växer med estatets storlek; låser bootande hostar — **klar** |
+| P2 | [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare — **klar** |
+| P3 | [C7](#c7)–[C14](#c14) | städning; ingen brådska, men billigt — **klar** |
 | — | [C4](#c4) | **klar** |
+
+En sak föll ut av omgång 2 och står kvar: `findHostByMac()` i `lib/utils.php`
+har efter [C2](#c2) ingen anropare utanför testerna. `hostMatchesMac()` har
+kvar en, i `storeMergeDiscoveredHosts()`. En död funktion vid sidan av
+`storeFindHost()` är precis den konstruktion [C3](#c3) handlar om, så den bör
+antingen tas bort med sina tester eller få en kommentar som säger varför den
+finns kvar.
 
 ## Ordning
 
@@ -563,9 +628,14 @@ sig:
 
 1. **Testerna** ([C15](#c15)) — nätet som gör resten säker att röra. *Klar.*
 2. **Store-lagret** ([C1](#c1), [C2](#c2), [C3](#c3)) — hänger ihop: samma fyra
-   anropare, samma modul, och `StoreTest.php` täcker redan det som ändras.
+   anropare, samma modul. *Klar.*
 3. **Korrekthetsfällorna** ([C5](#c5), [C6](#c6)) — en boot.cfg-lista och en
-   tokenkontroll, båda flyttade dit de hör hemma.
-4. **Städning** ([C7](#c7)–[C14](#c14)) — där [C10](#c10) är stor nog att
-   förtjäna en egen PR, särskilt eftersom den är förutsättningen för S14 i
-   säkerhetsgranskningen (CSP utan `unsafe-inline`).
+   tokenkontroll, båda flyttade dit de hör hemma. *Klar.*
+4. **Städning** ([C7](#c7)–[C14](#c14)) — där [C10](#c10) fick en egen commit.
+   *Klar.*
+
+Alla femton fynd är därmed stängda. Kvar som noterat men inte gjort:
+`configValue()`-helpern ur [C8](#c8), `findHostByMac()` utan anropare (se
+[C2](#c2)), enhetlig returtyp för `process*Action()` ur [C4](#c4), och
+`unsafe-inline` i CSP:n, som nu bara hålls kvar av `onclick`-attributen på
+variabelknapparna i mallredigeraren.

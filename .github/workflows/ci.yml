@@ -94,27 +94,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+
       # A kickstart that reaches a host with an unsubstituted {{TOKEN}} in it
       # is a failed install, and the renderer silently leaves unknown tokens
-      # alone. Check that every token a template uses is one the generator
-      # actually supplies.
+      # alone.
+      #
+      # This used to be grep against generate_kickstart.php, which was an
+      # approximation of a check the application can do exactly -- and one the
+      # templates an operator edits and uploads through the admin UI never went
+      # through, since they do not pass CI. templateUnknownTokens() is now the
+      # single implementation; the UI warns with it on every save, and this
+      # runs the same function over the templates in the repository.
       - name: every template token is supplied by the generator
         run: |
-          status=0
-          for tpl in templates/*.cfg; do
-            # Comment lines are excluded: the templates document their own
-            # {{TOKEN}} syntax in a header, and that is not a variable.
-            # ENDIF and ELSE are control directives handled by
-            # processConditionals(), not values the generator supplies.
-            tokens=$(grep -v '^[[:space:]]*#' "$tpl" \
-              | grep -o '{{[A-Z0-9_]*}}' \
-              | tr -d '{}' \
-              | grep -Ev '^(ENDIF|ELSE)$' \
-              | sort -u)
-
-            for token in $tokens; do
-              grep -q "'$token'" www/generate_kickstart.php \
-                || { echo "::error file=$tpl::{{$token}} is not set by generate_kickstart.php"; status=1; }
-            done
-          done
-          exit $status
+          php -r '
+            require "lib/templates.php";
+            $status = 0;
+            foreach (glob("templates/*.cfg") as $tpl) {
+              foreach (templateUnknownTokens((string)file_get_contents($tpl)) as $token) {
+                fwrite(STDERR, "::error file=$tpl::{{" . $token . "}} is not supplied by the generator\n");
+                $status = 1;
+              }
+            }
+            exit($status);
+          '

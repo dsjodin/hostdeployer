@@ -52,6 +52,7 @@ $requiredFiles = [
     'hosts.php',
     'scan.php',
     'settings.php',
+    'templates_actions.php',
     'templates.php',
     'admin_ui.php',
 ];

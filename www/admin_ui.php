@@ -29,6 +29,9 @@ function renderHeader() {
     <!-- Include font-awesome icons from local path -->
     <link rel="stylesheet" href="css/all.min.css">
     <link rel="stylesheet" href="css/bootstrap-icons.css">
+    <!-- Carries the template editor styles, which templates.php used to emit
+         as a <style> block from inside the page. -->
+    <link rel="stylesheet" href="css/admin-custom.css">
 </head>
 <body>
     <div class="wrapper">
@@ -115,6 +118,10 @@ function renderFooter() {
     <!-- Bootstrap and jQuery JS -->
     <script src="js/jquery.min.js"></script>
    <script src="js/bootstrap.bundle.min.js"></script>
+    <!-- Template editor behaviour, previously two <script> blocks emitted from
+         inside renderTemplatesContent(). It guards on the elements it needs,
+         so it does nothing on the other tabs. -->
+    <script src="js/template-editor.js" defer></script>
     
 <script>
     // Wait for DOM to be ready

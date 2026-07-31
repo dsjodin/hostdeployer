@@ -9,6 +9,7 @@
  */
 
 require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/bootcfg.php';
 
 /**
  * Split the host list into buckets by deployment status.
@@ -44,6 +45,10 @@ function categorizeHosts($hostsConfig) {
  * A version is usable only when its directory and boot.cfg exist; the UI
  * previously offered versions that would fail at boot time.
  *
+ * "Exists" has to mean the same thing here as it does at upload and at boot,
+ * which it did not: this looked only at the root, so a medium carrying just
+ * efi/boot/boot.cfg booted fine and was still shown as not installed.
+ *
  * @param array|null $globalConfig Global configuration
  * @return array<string, array> Version name => version config, augmented with 'available'
  */
@@ -56,7 +61,7 @@ function getEsxiVersions($globalConfig) {
     foreach ($versions as $name => &$version) {
         $path = $version['path'] ?? (AUTODEPLOY_ROOT . '/esxi/' . $name);
         $version['path'] = $path;
-        $version['available'] = is_dir($path) && is_file($path . '/boot.cfg');
+        $version['available'] = is_dir($path) && bootCfgResolve($path) !== null;
     }
     unset($version);
 

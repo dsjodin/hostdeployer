@@ -1,0 +1,13 @@
+# Kept out of `git archive` tarballs: none of it is part of the appliance.
+#
+# install.sh rsyncs from a checkout and excludes these itself, so this is for
+# anyone taking a release archive instead -- the two lists exist for different
+# consumers and are both worth having.
+/.github        export-ignore
+/.gitattributes export-ignore
+/tests          export-ignore
+/docs           export-ignore
+/phpunit.xml    export-ignore
+/phpstan.neon   export-ignore
+/ruff.toml      export-ignore
+/composer.lock  export-ignore

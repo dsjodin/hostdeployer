@@ -18,6 +18,7 @@ parameters:
         - lib/utils.php
         - lib/auth.php
         - lib/bootcfg.php
+        - lib/templates.php
         - lib/store.php
         - lib/secrets.php
         - lib/images.php

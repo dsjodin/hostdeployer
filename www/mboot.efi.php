@@ -15,6 +15,7 @@
  */
 
 require_once __DIR__ . '/../lib/store.php';
+require_once __DIR__ . '/../lib/bootcfg.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -65,14 +66,9 @@ if ($version === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $version)) {
 $imageDir = AUTODEPLOY_ROOT . '/esxi/' . $version;
 
 // Where the loader sits differs between releases and between how the media was
-// extracted, so try the layouts ESXi actually ships.
-$loader = null;
-foreach (['/efi/boot/bootx64.efi', '/mboot.efi', '/EFI/BOOT/BOOTX64.EFI'] as $candidate) {
-    if (is_file($imageDir . $candidate)) {
-        $loader = $imageDir . $candidate;
-        break;
-    }
-}
+// extracted; boot.ipxe.php resolves the same set of layouts.
+$relativeLoader = bootLoaderResolve($imageDir);
+$loader = $relativeLoader === null ? null : $imageDir . $relativeLoader;
 
 if ($loader === null) {
     mbootAbort("ESXi version $version has no loader on this server", 500);

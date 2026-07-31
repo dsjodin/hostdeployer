@@ -39,13 +39,13 @@ function renderScanContent($globalConfig, $scanOutput) {
                                     <div class="col-md-6">
                                         <div class="d-flex">
                                             <div class="fw-bold me-2">iLO IP Range:</div>
-                                            <div><?php echo htmlspecialchars($globalConfig['ilo']['scan_range_start']); ?> - <?php echo htmlspecialchars($globalConfig['ilo']['scan_range_end']); ?></div>
+                                            <div><?php echo h($globalConfig['ilo']['scan_range_start'] ?? ''); ?> - <?php echo h($globalConfig['ilo']['scan_range_end'] ?? ''); ?></div>
                                         </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="d-flex">
                                             <div class="fw-bold me-2">Credentials:</div>
-                                            <div><?php echo htmlspecialchars($globalConfig['ilo']['admin_user']); ?> / ********</div>
+                                            <div><?php echo h($globalConfig['ilo']['admin_user'] ?? 'Administrator'); ?> / ********</div>
                                         </div>
                                     </div>
                                 </div>
@@ -63,7 +63,7 @@ function renderScanContent($globalConfig, $scanOutput) {
                         <?php if ($scanOutput): ?>
                         <h6 class="border-bottom pb-2 mb-3">Scan Results:</h6>
                         <div class="scan-output bg-dark text-light p-3 rounded" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;">
-                            <?php echo nl2br(htmlspecialchars($scanOutput)); ?>
+                            <?php echo nl2br(h($scanOutput)); ?>
                         </div>
                         <?php endif; ?>
                     </div>

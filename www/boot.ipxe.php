@@ -77,9 +77,8 @@ ipxeLog("iPXE boot request from MAC: $mac, IP: $clientIP");
 // ---------------------------------------------------------------------------
 
 $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-$hostsConfig  = storeLoadHostsConfig();
 
-if ($globalConfig === null || $hostsConfig === null) {
+if ($globalConfig === null || !storeIsReachable()) {
     ipxeLog('Failed to load server configuration', 'ERROR');
     ipxeFail(['ERROR: deployment server configuration is unavailable'], 5);
 }
@@ -88,7 +87,10 @@ $defaultVersion = $globalConfig['deployment']['default_version'] ?? '';
 $autoRegistration = $globalConfig['deployment']['auto_registration'] ?? [];
 $autoRegistrationEnabled = !empty($autoRegistration['enabled']);
 
-$host = findHostByMac($mac, $hostsConfig);
+// An indexed lookup, not a scan. This endpoint is hit once per booting host
+// and then again on every retry of a 60-second poll, so it is the last place
+// that should be reading the whole estate to find one record.
+$host = storeFindHost($mac);
 
 // ---------------------------------------------------------------------------
 // Auto-registration of unknown hosts
@@ -142,9 +144,10 @@ if ($host === null && $autoRegistrationEnabled) {
         }
     }
 
-    // Re-read so we act on the record that actually landed on disk.
-    $hostsConfig = storeLoadHostsConfig() ?? $hostsConfig;
-    $host = findHostByMac($mac, $hostsConfig);
+    // Re-read so we act on the record that actually landed in the inventory:
+    // storeAddHost() declines when another NIC of the same server registered
+    // it first, and that host is the one to boot.
+    $host = storeFindHost($mac);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,9 +242,9 @@ if ($esxiVersion === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $esxiVersion)) {
 }
 
 $esxiPath = AUTODEPLOY_ROOT . '/esxi/' . $esxiVersion;
-$bootCfgPath = $esxiPath . '/boot.cfg';
+$bootCfgPath = is_dir($esxiPath) ? bootCfgResolve($esxiPath) : null;
 
-if (!is_dir($esxiPath) || !is_file($bootCfgPath)) {
+if ($bootCfgPath === null) {
     ipxeLog("ESXi version $esxiVersion not installed at $esxiPath", 'ERROR');
     ipxeFail([
         "ERROR: ESXi version $esxiVersion is not available on the deployment server",
@@ -299,15 +302,10 @@ if ($deploymentStatus === 'approved') {
 storeSetProgress($mac, 10, 'loading the installer');
 
 // mboot.efi is the ESXi bootloader. Where it lives differs between releases
-// and between how the media was extracted, so try the layouts ESXi actually
-// ships rather than assuming one.
-$mbootUrl = '';
-foreach (['/efi/boot/bootx64.efi', '/mboot.efi', '/EFI/BOOT/BOOTX64.EFI'] as $candidate) {
-    if (is_file($esxiPath . $candidate)) {
-        $mbootUrl = $imageUrl . $candidate;
-        break;
-    }
-}
+// and between how the media was extracted; bootLoaderResolve() knows the
+// layouts ESXi actually ships, and mboot.efi.php asks it the same question.
+$loader = bootLoaderResolve($esxiPath);
+$mbootUrl = $loader === null ? '' : $imageUrl . $loader;
 
 echo "#!ipxe\n\n";
 echo 'echo Booting ESXi ' . sanitizeIpxeText($esxiVersion) . ' installer for '
