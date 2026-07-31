@@ -50,9 +50,8 @@ try {
     ksLog('Kickstart generator started');
 
     $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-    $hostsConfig  = storeLoadHostsConfig();
 
-    if ($globalConfig === null || $hostsConfig === null) {
+    if ($globalConfig === null || !storeIsReachable()) {
         ksLog('Configuration loading failed', 'ERROR');
         ksAbort('Deployment server configuration is unavailable', [], 500);
     }
@@ -71,7 +70,7 @@ try {
 
     ksLog("Kickstart requested for MAC: $clientMac");
 
-    $hostConfig = findHostByMac($clientMac, $hostsConfig);
+    $hostConfig = storeFindHost($clientMac);
     $status = $hostConfig['deployment_status'] ?? 'unknown';
 
     if ($hostConfig === null) {

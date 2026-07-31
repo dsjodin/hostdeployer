@@ -167,76 +167,63 @@ function processAddHostAction($postData) {
     $vmotionIp = trim((string)($postData['vmotion_ip'] ?? ''));
     $isStandard = ($deploymentType === 'standard');
 
-    $updatedExisting = false;
+    $existing = storeFindHost($mac);
+    $updatedExisting = ($existing !== null);
 
-    $ok = storeMutateHosts(function (array &$hosts) use (
-        $mac, $hostname, $fqdn, $esxiVersion, $deploymentType, $postData, $vmotionIp, $isStandard, &$updatedExisting
-    ) {
-        $existing = [];
-        $existingIndex = -1;
-        foreach ($hosts as $index => $host) {
-            if (hostMatchesMac($host, $mac)) {
-                $existing = $host;
-                $existingIndex = $index;
-                break;
-            }
-        }
+    // Only the fields the form owns. storeUpdateHost() merges them into the
+    // record it reads inside its own transaction, which is what keeps the
+    // fields the form does not expose -- serial numbers and additional MACs
+    // from the iLO scan, deployment history, the datastore layout -- from
+    // being wiped out by a save.
+    $fields = [
+        'hostname'            => $hostname,
+        'fqdn'                => $fqdn,
+        'esxi_version'        => $esxiVersion,
+        'management_ip'       => trim((string)$postData['management_ip']),
+        'management_netmask'  => trim((string)($postData['management_netmask'] ?? '255.255.255.0')),
+        'management_gateway'  => trim((string)($postData['management_gateway'] ?? '')),
+        'deployment_type'     => $deploymentType,
+        'deployment_status'   => 'approved',
+        'last_updated'        => date('Y-m-d H:i:s'),
+    ];
 
-        // Merge into the existing record so that fields the form does not
-        // expose (serial numbers and additional MACs from the iLO scan,
-        // deployment history, datastore layout) are no longer wiped out.
-        $entry = array_merge($existing, [
-            'mac_address'         => $mac,
-            'hostname'            => $hostname,
-            'fqdn'                => $fqdn,
-            'esxi_version'        => $esxiVersion,
-            'management_ip'       => trim((string)$postData['management_ip']),
-            'management_netmask'  => trim((string)($postData['management_netmask'] ?? '255.255.255.0')),
-            'management_gateway'  => trim((string)($postData['management_gateway'] ?? '')),
-            'deployment_type'     => $deploymentType,
-            'deployment_status'   => 'approved',
-            'last_updated'        => date('Y-m-d H:i:s'),
+    $serial = trim((string)($postData['serial'] ?? ''));
+    if ($serial !== '') {
+        $fields['serial_number'] = $serial;
+    }
+
+    $iloIp = trim((string)($postData['ilo_ip'] ?? ''));
+    if ($iloIp !== '') {
+        $fields['ilo_ip'] = $iloIp;
+    }
+
+    // The merge is one level deep, so a partial "vlans" would drop the keys it
+    // omits. Storage is not on this form and has to be carried over by hand.
+    $fields['vlans'] = [
+        'management' => (int)($postData['vlan_mgmt'] ?? 0),
+        'vmotion'    => $isStandard ? (int)($postData['vlan_vmotion'] ?? 0) : 0,
+        'storage'    => (int)($existing['vlans']['storage'] ?? 0),
+    ];
+
+    if ($isStandard && $vmotionIp !== '') {
+        $fields['vmotion_ip'] = $vmotionIp;
+        $fields['vmotion_netmask'] = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
+    } else {
+        // Empty rather than absent: a merge cannot express "remove this key",
+        // and '' is what the columns held once the old code unset them.
+        $fields['vmotion_ip'] = '';
+        $fields['vmotion_netmask'] = '';
+    }
+
+    if ($updatedExisting) {
+        $ok = storeUpdateHost($mac, $fields);
+    } else {
+        $ok = storeAddHost($fields + [
+            'mac_address'        => $mac,
+            'datastore'          => ['name' => 'datastore1', 'drives' => []],
+            'secure_boot_status' => 'unknown',
         ]);
-
-        $serial = trim((string)($postData['serial'] ?? ''));
-        if ($serial !== '') {
-            $entry['serial_number'] = $serial;
-        }
-
-        $iloIp = trim((string)($postData['ilo_ip'] ?? ''));
-        if ($iloIp !== '') {
-            $entry['ilo_ip'] = $iloIp;
-        }
-
-        $entry['vlans'] = [
-            'management' => (int)($postData['vlan_mgmt'] ?? 0),
-            'vmotion'    => $isStandard ? (int)($postData['vlan_vmotion'] ?? 0) : 0,
-            'storage'    => (int)($existing['vlans']['storage'] ?? 0),
-        ];
-
-        if ($isStandard && $vmotionIp !== '') {
-            $entry['vmotion_ip'] = $vmotionIp;
-            $entry['vmotion_netmask'] = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
-        } else {
-            unset($entry['vmotion_ip'], $entry['vmotion_netmask']);
-        }
-
-        if (!isset($entry['datastore'])) {
-            $entry['datastore'] = ['name' => 'datastore1', 'drives' => []];
-        }
-        if (!isset($entry['secure_boot_status'])) {
-            $entry['secure_boot_status'] = 'unknown';
-        }
-
-        if ($existingIndex >= 0) {
-            $hosts[$existingIndex] = $entry;
-            $updatedExisting = true;
-        } else {
-            $hosts[] = $entry;
-        }
-
-        return true;
-    });
+    }
 
     if (!$ok) {
         $result['error'] = 'Failed to save hosts configuration';
@@ -268,34 +255,21 @@ function processDeleteHostAction($postData) {
         return $result;
     }
 
-    $found = false;
-    $ok = storeMutateHosts(function (array &$hosts) use ($mac, &$found) {
-        foreach ($hosts as $index => $host) {
-            if (hostMatchesMac($host, $mac)) {
-                array_splice($hosts, $index, 1);
-                $found = true;
-                break;
-            }
-        }
-        return $found;
-    });
-
-    if (!$found) {
+    // Looked up first only so that "no such host" and "the delete failed" stay
+    // two different messages; storeDeleteHost() reports both as false.
+    if (storeFindHost($mac) === null) {
         $result['error'] = "Host with MAC '$mac' not found";
         return $result;
     }
 
-    if (!$ok) {
-        $result['error'] = 'Failed to save hosts configuration after deletion';
+    // storeDeleteHost() drops the credential overrides too, so they cannot
+    // leak to a future host that happens to reuse the MAC. That used to be
+    // copied out here, which made this the only delete path in the tree and
+    // storeDeleteHost() dead code -- the shape that lets a fix reach one
+    // implementation and not the other.
+    if (!storeDeleteHost($mac)) {
+        $result['error'] = 'Failed to delete the host';
         return $result;
-    }
-
-    // Drop any credential overrides so they cannot leak to a future host
-    // that happens to reuse the MAC.
-    $credentials = storeLoadCredentials();
-    if (is_array($credentials)) {
-        unset($credentials['ilo']['hosts'][$mac], $credentials['esxi']['hosts'][$mac]);
-        storeSaveCredentials($credentials);
     }
 
     logMessage("Deleted host $mac");
@@ -377,52 +351,44 @@ function processApproveHostAction($postData) {
     $deploymentType = ($postData['deployment_type'] ?? 'standard') === 'vcf' ? 'vcf' : 'standard';
     $vmotionIp = trim((string)($postData['vmotion_ip'] ?? ''));
 
-    $found = false;
-    $ok = storeMutateHosts(function (array &$hosts) use (
-        $mac, $hostname, $fqdn, $deploymentType, $postData, $vmotionIp, &$found
-    ) {
-        foreach ($hosts as &$host) {
-            if (!hostMatchesMac($host, $mac)) {
-                continue;
-            }
-
-            $host['hostname'] = $hostname;
-            $host['fqdn'] = $fqdn;
-            $host['management_ip'] = trim((string)$postData['management_ip']);
-            $host['management_netmask'] = trim((string)($postData['management_netmask'] ?? '255.255.255.0'));
-            $host['management_gateway'] = trim((string)($postData['management_gateway'] ?? ''));
-            $host['deployment_type'] = $deploymentType;
-
-            if (!isset($host['vlans']) || !is_array($host['vlans'])) {
-                $host['vlans'] = ['management' => 0, 'vmotion' => 0, 'storage' => 0];
-            }
-            $host['vlans']['management'] = (int)($postData['vlan_mgmt'] ?? 0);
-
-            if ($deploymentType === 'standard' && $vmotionIp !== '') {
-                $host['vmotion_ip'] = $vmotionIp;
-                $host['vmotion_netmask'] = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
-                $host['vlans']['vmotion'] = (int)($postData['vlan_vmotion'] ?? 0);
-            } else {
-                unset($host['vmotion_ip'], $host['vmotion_netmask']);
-                $host['vlans']['vmotion'] = 0;
-            }
-
-            $host['deployment_status'] = 'approved';
-            $host['approved_time'] = date('Y-m-d H:i:s');
-            $found = true;
-            break;
-        }
-        unset($host);
-
-        return $found;
-    });
-
-    if (!$found) {
+    $existing = storeFindHost($mac);
+    if ($existing === null) {
         $result['error'] = "Host with MAC '$mac' not found";
         return $result;
     }
 
-    if (!$ok) {
+    // Carried over rather than replaced: the merge is one level deep, and this
+    // form sets only two of the three VLANs.
+    $vlans = is_array($existing['vlans'] ?? null)
+        ? $existing['vlans']
+        : ['management' => 0, 'vmotion' => 0, 'storage' => 0];
+    $vlans['management'] = (int)($postData['vlan_mgmt'] ?? 0);
+
+    $fields = [
+        'hostname'           => $hostname,
+        'fqdn'               => $fqdn,
+        'management_ip'      => trim((string)$postData['management_ip']),
+        'management_netmask' => trim((string)($postData['management_netmask'] ?? '255.255.255.0')),
+        'management_gateway' => trim((string)($postData['management_gateway'] ?? '')),
+        'deployment_type'    => $deploymentType,
+        'deployment_status'  => 'approved',
+        'approved_time'      => date('Y-m-d H:i:s'),
+    ];
+
+    if ($deploymentType === 'standard' && $vmotionIp !== '') {
+        $fields['vmotion_ip'] = $vmotionIp;
+        $fields['vmotion_netmask'] = trim((string)($postData['vmotion_netmask'] ?? '255.255.255.0'));
+        $vlans['vmotion'] = (int)($postData['vlan_vmotion'] ?? 0);
+    } else {
+        // Empty rather than absent, as in processAddHostAction().
+        $fields['vmotion_ip'] = '';
+        $fields['vmotion_netmask'] = '';
+        $vlans['vmotion'] = 0;
+    }
+
+    $fields['vlans'] = $vlans;
+
+    if (!storeUpdateHost($mac, $fields)) {
         $result['error'] = 'Failed to update host approval status';
         return $result;
     }
@@ -455,30 +421,22 @@ function processReinstallHostAction($postData) {
         return $result;
     }
 
-    $found = false;
-    $ok = storeMutateHosts(function (array &$hosts) use ($mac, &$found) {
-        foreach ($hosts as &$host) {
-            if (!hostMatchesMac($host, $mac)) {
-                continue;
-            }
-            $host['deployment_status'] = 'approved';
-            $host['approved_time'] = date('Y-m-d H:i:s');
-            $host['reinstall_requested'] = date('Y-m-d H:i:s');
-            unset($host['deployment_started'], $host['deployment_time']);
-            $found = true;
-            break;
-        }
-        unset($host);
-
-        return $found;
-    });
-
-    if (!$found) {
+    if (storeFindHost($mac) === null) {
         $result['error'] = "Host with MAC '$mac' not found";
         return $result;
     }
 
-    if (!$ok) {
+    $now = date('Y-m-d H:i:s');
+
+    if (!storeUpdateHost($mac, [
+        'deployment_status'   => 'approved',
+        'approved_time'       => $now,
+        'reinstall_requested' => $now,
+        // Null rather than absent: these are the nullable timestamp columns,
+        // and clearing them is what makes the host look un-deployed again.
+        'deployment_started'  => null,
+        'deployment_time'     => null,
+    ])) {
         $result['error'] = 'Failed to mark host for reinstallation';
         return $result;
     }

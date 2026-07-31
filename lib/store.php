@@ -188,18 +188,35 @@ if (!function_exists('storeUpsertHostRow')) {
 
         $pdo->prepare($sql)->execute($row);
 
-        // Replace the secondary MACs wholesale: the caller hands over the
-        // complete list, and merging would make removing one impossible.
-        $pdo->prepare('DELETE FROM host_macs WHERE host_mac = ?')->execute([$row['mac']]);
-
-        $insert = $pdo->prepare('INSERT OR IGNORE INTO host_macs (mac, host_mac) VALUES (?, ?)');
+        // The caller hands over the complete list, because merging would make
+        // removing a MAC impossible.
+        $wanted = [];
         foreach (($host['additional_macs'] ?? []) as $extraMac) {
             $normalised = formatMac($extraMac);
             // A secondary MAC equal to the primary would be a duplicate key,
             // and one already claimed by another host is ignored rather than
-            // stolen -- INSERT OR IGNORE covers both.
+            // stolen -- INSERT OR IGNORE below covers both.
             if ($normalised !== '' && $normalised !== $row['mac']) {
-                $insert->execute([$normalised, $row['mac']]);
+                $wanted[$normalised] = true;
+            }
+        }
+        $wanted = array_keys($wanted);
+        sort($wanted);
+
+        $current = $pdo->prepare('SELECT mac FROM host_macs WHERE host_mac = ? ORDER BY mac');
+        $current->execute([$row['mac']]);
+
+        // Only rewrite when the list actually changed. Every write used to
+        // issue a DELETE plus one INSERT per MAC, so the common case -- a
+        // status or progress update on a host whose NICs have not moved --
+        // spent three statements writing what was already there, on every
+        // host, inside a lock a booting host was waiting on.
+        if ($current->fetchAll(PDO::FETCH_COLUMN) !== $wanted) {
+            $pdo->prepare('DELETE FROM host_macs WHERE host_mac = ?')->execute([$row['mac']]);
+
+            $insert = $pdo->prepare('INSERT OR IGNORE INTO host_macs (mac, host_mac) VALUES (?, ?)');
+            foreach ($wanted as $extraMac) {
+                $insert->execute([$extraMac, $row['mac']]);
             }
         }
 
@@ -264,9 +281,11 @@ if (!function_exists('storeLoadHostsConfig')) {
     /**
      * Load the whole inventory in the {"hosts": [...]} envelope.
      *
-     * The envelope is kept because findHostByMac() takes it and the admin
-     * dashboard iterates it. It is no longer a file, but the shape is the API
-     * the rest of the tree was written against.
+     * For callers that genuinely want every host: the admin dashboard, which
+     * renders them all. The boot endpoints used to come through here to find
+     * one record and now use storeFindHost(), so anything reaching for this
+     * function to answer a question about a single host is reaching for the
+     * wrong one.
      *
      * @return array{hosts: array<int, array<string, mixed>>}|null
      */
@@ -288,6 +307,33 @@ if (!function_exists('storeLoadHosts')) {
         $config = storeLoadHostsConfig();
 
         return $config === null ? [] : $config['hosts'];
+    }
+}
+
+if (!function_exists('storeIsReachable')) {
+    /**
+     * Whether the inventory can be opened at all.
+     *
+     * storeFindHost() answers null both for "no such host" and for "the
+     * database could not be opened", and the boot endpoints have to tell those
+     * apart: the first is a server awaiting registration and the second is an
+     * outage. Without the distinction an unreadable inventory looks to an
+     * operator like every host in the estate suddenly going unknown.
+     *
+     * The connection is memoised in db(), so asking costs nothing after the
+     * first call and never touches the hosts table. This replaces reading the
+     * entire inventory purely to see whether reading it worked.
+     *
+     * @return bool
+     */
+    function storeIsReachable() {
+        try {
+            db();
+            return true;
+        } catch (Throwable $e) {
+            logMessage('The host inventory is unavailable: ' . $e->getMessage(), 'ERROR');
+            return false;
+        }
     }
 }
 

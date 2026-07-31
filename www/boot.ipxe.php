@@ -77,9 +77,8 @@ ipxeLog("iPXE boot request from MAC: $mac, IP: $clientIP");
 // ---------------------------------------------------------------------------
 
 $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
-$hostsConfig  = storeLoadHostsConfig();
 
-if ($globalConfig === null || $hostsConfig === null) {
+if ($globalConfig === null || !storeIsReachable()) {
     ipxeLog('Failed to load server configuration', 'ERROR');
     ipxeFail(['ERROR: deployment server configuration is unavailable'], 5);
 }
@@ -88,7 +87,10 @@ $defaultVersion = $globalConfig['deployment']['default_version'] ?? '';
 $autoRegistration = $globalConfig['deployment']['auto_registration'] ?? [];
 $autoRegistrationEnabled = !empty($autoRegistration['enabled']);
 
-$host = findHostByMac($mac, $hostsConfig);
+// An indexed lookup, not a scan. This endpoint is hit once per booting host
+// and then again on every retry of a 60-second poll, so it is the last place
+// that should be reading the whole estate to find one record.
+$host = storeFindHost($mac);
 
 // ---------------------------------------------------------------------------
 // Auto-registration of unknown hosts
@@ -142,9 +144,10 @@ if ($host === null && $autoRegistrationEnabled) {
         }
     }
 
-    // Re-read so we act on the record that actually landed on disk.
-    $hostsConfig = storeLoadHostsConfig() ?? $hostsConfig;
-    $host = findHostByMac($mac, $hostsConfig);
+    // Re-read so we act on the record that actually landed in the inventory:
+    // storeAddHost() declines when another NIC of the same server registered
+    // it first, and that host is the one to boot.
+    $host = storeFindHost($mac);
 }
 
 // ---------------------------------------------------------------------------
