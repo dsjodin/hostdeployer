@@ -1,8 +1,7 @@
 # Kodgranskning — hostdeployer, juli 2026
 
 Korrekthet, robusthet och struktur. Säkerhetsfynden ligger separat i
-[`SECURITY-REVIEW-2026-07.md`](SECURITY-REVIEW-2026-07.md), installationsfelen i
-[`install-troubleshooting.md`](install-troubleshooting.md) och nätverksfrågan i
+[`SECURITY-REVIEW-2026-07.md`](SECURITY-REVIEW-2026-07.md). och nätverksfrågan i
 [`network-segmentation.md`](network-segmentation.md).
 
 Fortsättning på [`CODE-REVIEW.md`](CODE-REVIEW.md), som gjorde den förra
