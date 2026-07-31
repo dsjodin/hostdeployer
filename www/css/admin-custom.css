@@ -261,3 +261,95 @@ body {
     align-self: stretch;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Template editor
+
+   Was a <style> block emitted by addTemplateEditorStyles() in
+   www/templates.php. Out here it is cacheable, and it is one of the things
+   that had to leave the page before the CSP can drop 'unsafe-inline'.
+   --------------------------------------------------------------------------- */
+<style>
+/* Enhanced styles for the template editor */
+.template-editor-container {
+    position: relative;
+}
+
+.code-editor {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    tab-size: 4;
+    -moz-tab-size: 4;
+    white-space: pre-wrap;
+    resize: vertical;
+    min-height: 400px;
+}
+
+/* Variable button styles */
+.variable-btn {
+    margin: 2px;
+    font-size: 0.8rem;
+}
+
+/* Variable section styles */
+.variable-section {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+}
+
+/* Reference table styles */
+.variable-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.variable-table th, .variable-table td {
+    padding: 6px 10px;
+    border: 1px solid #dee2e6;
+}
+
+.variable-table th {
+    background-color: #e9ecef;
+}
+
+/* Floating reference window */
+.floating-reference-window {
+    display: none;
+    position: fixed;
+    width: 700px;
+    max-width: 90vw;
+    max-height: 80vh;
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    z-index: 1050;
+    overflow: hidden;
+}
+
+.reference-window-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    cursor: move;
+}
+
+.reference-window-body {
+    padding: 15px;
+    overflow-y: auto;
+    max-height: calc(80vh - 50px);
+}
+
+.reference-window-body code {
+    background-color: #f1f1f1;
+    padding: 2px 4px;
+    border-radius: 3px;
+    color: #d63384;
+}
