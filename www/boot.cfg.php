@@ -87,13 +87,7 @@ if ($version === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $version)) {
 }
 
 $imageDir = AUTODEPLOY_ROOT . '/esxi/' . $version;
-$sourcePath = null;
-foreach ([$imageDir . '/boot.cfg', $imageDir . '/efi/boot/boot.cfg'] as $candidate) {
-    if (is_file($candidate)) {
-        $sourcePath = $candidate;
-        break;
-    }
-}
+$sourcePath = bootCfgResolve($imageDir);
 
 if ($sourcePath === null) {
     bootCfgAbort("ESXi version $version has no boot.cfg on this server", 500);

@@ -8,8 +8,11 @@
  * parsing lives here rather than inline in one endpoint. The approval gate is
  * here for the same reason and a stronger one: it had drifted into two copies.
  *
- * Nothing in this file touches the filesystem, the request or the log. That is
- * deliberate: it is the part of the boot chain that is worth testing, and a
+ * Nothing here touches the request or the log, and only bootCfgResolve() and
+ * bootLoaderResolve() touch the filesystem -- they exist because *where* the
+ * files are is the same question at four call sites, and answering it
+ * differently at each is what C5 in docs/CODE-REVIEW-2026-07.md was. The rest
+ * is pure, deliberately: it is the part of the boot chain worth testing, and a
  * function that reads a file and writes a log is a function nobody tests.
  */
 
@@ -70,6 +73,97 @@ if (!function_exists('bootGateGetDecision')) {
         }
 
         return BOOT_GATE_REFUSE;
+    }
+}
+
+if (!function_exists('bootCfgCandidates')) {
+    /**
+     * Where boot.cfg can sit in an extracted installation medium.
+     *
+     * ESXi ships it at the root and again under efi/boot/, and which of those
+     * survives depends on how the medium was extracted -- a case-insensitive
+     * unpack yields BOOT.CFG. The list lives in one place because a version
+     * accepted at upload has to be the same set of versions that can boot: it
+     * used to be spelled four different ways, so a medium carrying only
+     * efi/boot/boot.cfg passed imageLooksBootable(), booted through
+     * boot.cfg.php, and was simultaneously reported as not installed by the
+     * admin UI and refused by boot.ipxe.php.
+     *
+     * Root first: that is the copy VMware intends to be read, and the one the
+     * others are a fallback for.
+     *
+     * @param string $imageDir Extracted image directory, without a trailing slash
+     * @return string[] Absolute paths, most likely first
+     */
+    function bootCfgCandidates($imageDir) {
+        $imageDir = rtrim((string)$imageDir, '/');
+
+        return [
+            $imageDir . '/boot.cfg',
+            $imageDir . '/BOOT.CFG',
+            $imageDir . '/efi/boot/boot.cfg',
+        ];
+    }
+}
+
+if (!function_exists('bootLoaderCandidates')) {
+    /**
+     * Where the UEFI loader (mboot) can sit in an extracted medium.
+     *
+     * Same question as bootCfgCandidates(), same reason for one answer: this
+     * list was written out twice, in boot.ipxe.php and mboot.efi.php.
+     *
+     * Relative, unlike the boot.cfg candidates, because one of the two callers
+     * turns the answer into a URL under the image's HTTP prefix and the other
+     * into a path under its directory. The same suffix serves both.
+     *
+     * @return string[] Paths relative to the image directory, most likely first
+     */
+    function bootLoaderCandidates() {
+        return [
+            '/efi/boot/bootx64.efi',
+            '/mboot.efi',
+            '/EFI/BOOT/BOOTX64.EFI',
+        ];
+    }
+}
+
+if (!function_exists('bootCfgResolve')) {
+    /**
+     * The boot.cfg an extracted medium actually has, or null.
+     *
+     * @param string $imageDir Extracted image directory
+     * @return string|null Path to the first candidate that exists
+     */
+    function bootCfgResolve($imageDir) {
+        foreach (bootCfgCandidates($imageDir) as $candidate) {
+            if (is_file($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+}
+
+if (!function_exists('bootLoaderResolve')) {
+    /**
+     * The UEFI loader an extracted medium actually has, or null.
+     *
+     * @param string $imageDir Extracted image directory
+     * @return string|null The relative path of the first candidate that
+     *                     exists, for the caller to join to a URL or a path
+     */
+    function bootLoaderResolve($imageDir) {
+        $imageDir = rtrim((string)$imageDir, '/');
+
+        foreach (bootLoaderCandidates() as $candidate) {
+            if (is_file($imageDir . $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 }
 

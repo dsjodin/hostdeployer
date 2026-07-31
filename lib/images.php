@@ -177,9 +177,7 @@ if (!function_exists('imageLooksBootable')) {
     function imageLooksBootable($dir) {
         require_once __DIR__ . '/bootcfg.php';
 
-        $candidates = [$dir . '/boot.cfg', $dir . '/BOOT.CFG', $dir . '/efi/boot/boot.cfg'];
-
-        foreach ($candidates as $path) {
+        foreach (bootCfgCandidates($dir) as $path) {
             if (!is_file($path)) {
                 continue;
             }

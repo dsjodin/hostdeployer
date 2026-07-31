@@ -13,6 +13,7 @@ if (!defined('ADMIN_DASHBOARD')) {
 }
 
 require_once __DIR__ . '/../lib/utils.php';
+require_once __DIR__ . '/../lib/templates.php';
 
 /**
  * Resolve the configured templates directory.
@@ -1459,12 +1460,33 @@ esxcli network vswitch standard portgroup add --portgroup-name=vMotion --vswitch
  * @param array $files Uploaded files ($_FILES)
  * @return array Result with message and error information
  */
+/**
+ * A note listing the tokens a template uses that nothing will substitute.
+ *
+ * A warning rather than a refusal: a template may legitimately be saved
+ * half-finished, and an operator editing one is better served by being told
+ * than by having the save rejected. What must not happen is the silence --
+ * the literal {{TOKEN}} reaching a host, where it is a failed install with
+ * nothing on the console explaining why.
+ *
+ * @param string $content Template contents
+ * @return string Empty when every token is known
+ */
+function templateTokenWarning($content) {
+    $unknown = templateUnknownTokens($content);
+    if ($unknown === []) {
+        return '';
+    }
+
+    return ' Warning: nothing will substitute {{' . implode('}}, {{', $unknown) . '}}.';
+}
+
 function processTemplatesActions($action, $postData, $files = []) {
     $result = [
         'message' => '',
         'error' => ''
     ];
-    
+
     // Get templates directory
     $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
     $templatesDir = getTemplatesDir($globalConfig);
@@ -1493,7 +1515,8 @@ function processTemplatesActions($action, $postData, $files = []) {
             $createBackup = isset($postData['create_backup']);
 
             if (saveTemplateFile($templatePath, $content, $createBackup)) {
-                $result['message'] = "Template '$templateFile' saved successfully";
+                $result['message'] = "Template '$templateFile' saved successfully"
+                    . templateTokenWarning((string)$content);
             } else {
                 $result['error'] = "Failed to save template '$templateFile'";
             }
@@ -1672,7 +1695,10 @@ function processTemplatesActions($action, $postData, $files = []) {
 
             if (move_uploaded_file($uploadedFile['tmp_name'], $targetPath)) {
                 @chmod($targetPath, 0640);
-                $result['message'] = "Template '$filename' uploaded successfully";
+                // Read back rather than reading tmp_name: move_uploaded_file()
+                // has already consumed it, and this is what actually landed.
+                $result['message'] = "Template '$filename' uploaded successfully"
+                    . templateTokenWarning((string)@file_get_contents($targetPath));
             } else {
                 $result['error'] = "Failed to upload template";
             }

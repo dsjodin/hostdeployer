@@ -242,9 +242,9 @@ if ($esxiVersion === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $esxiVersion)) {
 }
 
 $esxiPath = AUTODEPLOY_ROOT . '/esxi/' . $esxiVersion;
-$bootCfgPath = $esxiPath . '/boot.cfg';
+$bootCfgPath = is_dir($esxiPath) ? bootCfgResolve($esxiPath) : null;
 
-if (!is_dir($esxiPath) || !is_file($bootCfgPath)) {
+if ($bootCfgPath === null) {
     ipxeLog("ESXi version $esxiVersion not installed at $esxiPath", 'ERROR');
     ipxeFail([
         "ERROR: ESXi version $esxiVersion is not available on the deployment server",
@@ -302,15 +302,10 @@ if ($deploymentStatus === 'approved') {
 storeSetProgress($mac, 10, 'loading the installer');
 
 // mboot.efi is the ESXi bootloader. Where it lives differs between releases
-// and between how the media was extracted, so try the layouts ESXi actually
-// ships rather than assuming one.
-$mbootUrl = '';
-foreach (['/efi/boot/bootx64.efi', '/mboot.efi', '/EFI/BOOT/BOOTX64.EFI'] as $candidate) {
-    if (is_file($esxiPath . $candidate)) {
-        $mbootUrl = $imageUrl . $candidate;
-        break;
-    }
-}
+// and between how the media was extracted; bootLoaderResolve() knows the
+// layouts ESXi actually ships, and mboot.efi.php asks it the same question.
+$loader = bootLoaderResolve($esxiPath);
+$mbootUrl = $loader === null ? '' : $imageUrl . $loader;
 
 echo "#!ipxe\n\n";
 echo 'echo Booting ESXi ' . sanitizeIpxeText($esxiVersion) . ' installer for '

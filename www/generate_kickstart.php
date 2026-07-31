@@ -7,6 +7,7 @@
  */
 
 require_once __DIR__ . '/../lib/store.php';
+require_once __DIR__ . '/../lib/templates.php';
 
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -91,11 +92,10 @@ try {
         }
 
         $template = (string)file_get_contents($waitingTemplate);
-        echo renderTemplate($template, [
-            'MAC_ADDRESS'     => $clientMac,
-            'REGISTERED_TIME' => $hostConfig['registered_time'] ?? date('Y-m-d H:i:s'),
-            'SERVER_IP'       => $globalConfig['webserver']['ip'] ?? '',
-        ]);
+        echo renderTemplate(
+            $template,
+            waitingTemplateVariables(['mac_address' => $clientMac] + $hostConfig, $globalConfig)
+        );
         exit;
     }
 
@@ -166,42 +166,16 @@ try {
         ksAbort('No ESXi root password is configured on the deployment server', [], 500);
     }
 
-    $dnsServers = implode(',', (array)($globalConfig['network']['dns_servers'] ?? []));
-    $ntpServers = implode(',', (array)($globalConfig['network']['ntp_servers'] ?? []));
-    $serverIp = $globalConfig['webserver']['ip'] ?? '';
-
-    $variables = [
-        'ROOT_PASSWORD_HASH' => generateEsxiPasswordHash($rootPassword),
-        'ESXMGMT_IP'         => $hostConfig['management_ip'] ?? '',
-        'ESXMGMT_NETMASK'    => $hostConfig['management_netmask'] ?? '255.255.255.0',
-        'ESXMGMT_GATEWAY'    => $hostConfig['management_gateway'] ?? '',
-        'ESXIMGMT_VLANID'    => (int)($hostConfig['vlans']['management'] ?? 0),
-        'DNS_SERVERS'        => $dnsServers,
-        'NTP_SERVERS'        => $ntpServers,
-        'HOSTNAME'           => $hostConfig['hostname'] ?? '',
-        'FQDN'               => $hostConfig['fqdn'] ?: (($hostConfig['hostname'] ?? 'esxi') . '.local'),
-        'SERVER_IP'          => $serverIp,
-        'SERVER_URL'         => rtrim((string)($globalConfig['webserver']['url'] ?? "http://$serverIp"), '/'),
-        'MAC_ADDRESS'        => $clientMac,
-        'DATASTORE_NAME'     => $hostConfig['datastore']['name'] ?? 'datastore1',
-        // Carried into %firstboot so the progress beacon and the completion
-        // callback can present it too. Those endpoints write to the inventory,
-        // and until now anything on the network could call them: marking a host
-        // deployed stops its installation, and the operator sees a host that
-        // hung rather than one that was interfered with.
-        'BOOT_TOKEN'         => $bootToken,
-    ];
-
-    // vMotion is only rendered when the host actually has an address for it.
-    $vmotionIp = $hostConfig['vmotion_ip'] ?? '';
-    if ($deploymentType === 'standard' && $vmotionIp !== '') {
-        $variables['VMOTION_CONFIGURED'] = true;
-        $variables['VMOTION_IP'] = $vmotionIp;
-        $variables['VMOTION_NETMASK'] = $hostConfig['vmotion_netmask'] ?? '255.255.255.0';
-        $variables['VMOTION_VLANID'] = (int)($hostConfig['vlans']['vmotion'] ?? 0);
-    } else {
-        $variables['VMOTION_CONFIGURED'] = false;
-    }
+    // Built in lib/templates.php so that the list of tokens the generator
+    // supplies has one definition, which templateUnknownTokens() can then
+    // check an uploaded template against.
+    $variables = kickstartVariables(
+        ['mac_address' => $clientMac] + $hostConfig,
+        (array)$globalConfig,
+        generateEsxiPasswordHash($rootPassword),
+        $bootToken,
+        $deploymentType
+    );
 
     $kickstart = renderTemplate($template, $variables);
 
