@@ -137,25 +137,33 @@ cat <<CONFIG
             // UEFI HTTP Boot (RFC 3925). The reply must echo the HTTPClient
             // vendor class back or the firmware ignores it.
             //
-            // This branch goes straight to the ESXi loader: no iPXE, no TFTP.
-            // /mboot.efi resolves which ESXi version the client is assigned
-            // and streams that loader; mboot then fetches /boot.cfg beside
-            // it, which the server renders for that host. Neither URL can
-            // carry a MAC -- option 67 names one URL for the whole class --
-            // so the server identifies the client by its address.
+            // This hands out iPXE, not the ESXi loader. Going straight to
+            // /mboot.efi works, but it skips the only part of the chain that
+            // can wait: a host that is not approved yet has no way to poll,
+            // because boot.cfg is served to a UEFI loader that cannot retry.
+            // Through iPXE the same host parks in boot.ipxe.php's retry loop
+            // and starts installing the moment it is approved.
+            //
+            // The host still ends up at the same rendered boot.cfg; iPXE
+            // chains mboot and points it there. See docs/bootchain.md.
             "name": "UEFI-HTTP",
             "test": "not member('iPXE') and substring(option[60].hex, 0, 10) == 'HTTPClient'",
             "option-data": [
                 { "name": "vendor-class-identifier", "data": "HTTPClient" }
             ],
-            "boot-file-name": "http://$SERVER_IP/mboot.efi"
+            "boot-file-name": "http://$SERVER_IP/ipxe/ipxe.efi"
         },
         {
             // UEFI PXE (arch 7 = x64, 9 = EFI BC, 11 = arm64). The only
             // branch that needs a tftpd, because the firmware PXE stack has
-            // no HTTP client. It exists for hardware that cannot HTTP Boot;
-            // if none of yours is that old, drop this class and remove
-            // tftpd-hpa.
+            // no HTTP client. It exists for hardware that cannot HTTP Boot.
+            //
+            // Keep it even when every server can. A one-time Redfish boot
+            // override asks for "Pxe", and which network entry the firmware
+            // then picks -- HTTP Boot or plain PXE -- is its decision, not
+            // ours. Both classes serve the same ipxe.efi, so either choice
+            // lands in the same place. Dropping this class is what turns
+            // that harmless ambiguity into a failed deployment.
             "name": "UEFI-PXE",
             "test": "not member('iPXE') and (option[93].hex == 0x0007 or option[93].hex == 0x0009 or option[93].hex == 0x000b)",
             "next-server": "$SERVER_IP",

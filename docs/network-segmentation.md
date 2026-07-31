@@ -21,16 +21,16 @@ gjord — det som saknas är att de två lyssnar på *olika adresser*.
 | Tjänst | Port | Vad |
 |---|---|---|
 | Kea DHCPv4 | 67/udp | broadcast; kräver L2-närvaro eller en DHCP-relay (se §5) |
-| tftpd-hpa | 69/udp | **bara** UEFI-PXE-grenen (`ipxe.efi`). Hostar som klarar UEFI HTTP Boot behöver den inte |
+| tftpd-hpa | 69/udp | UEFI-PXE-grenen (`ipxe.efi`). Behåll den: en engångs-boot-override ber om `Pxe`, och firmware väljer själv mellan HTTP Boot och PXE |
 | nginx | 80/tcp | hela bootkedjan, se nedan |
 
 Port 80, endpoint för endpoint (`nginx.conf:41-118`):
 
 | Väg | Anropas av | Steg |
 |---|---|---|
-| `/ipxe/` | iPXE-firmware | `ipxe.efi`, `boot.ipxe` |
+| `/ipxe/` | UEFI HTTP Boot-firmware, iPXE | `ipxe.efi` (option 67), `boot.ipxe` |
 | `/boot.ipxe.php?mac=` | iPXE | genererar bootskriptet, väntar på godkännande |
-| `/mboot.efi` | UEFI HTTP Boot-firmware | löser hostens ESXi-version, streamar laddaren |
+| `/mboot.efi` | UEFI HTTP Boot-firmware | oanvänd i standardkonfigurationen; kvar för den kortare kedjan utan väntläge |
 | `/boot.cfg`, `/boot.cfg.php` | mboot | per-host boot.cfg med `prefix=`, `ks=`, `netdevice=` |
 | `/esxi/<version>/…` | mboot | kernel + ~110 moduler |
 | `/ks.cfg?mac=` | weasel (installern) | kickstart |

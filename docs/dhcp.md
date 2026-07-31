@@ -69,7 +69,7 @@ gamla vägen upprepade gånger rullade tillbaka bootmetoden.
 
 ```
 iPXE       (option 77 == "iPXE")        →  http://<server>/ipxe/boot.ipxe
-UEFI-HTTP  (option 60 == "HTTPClient")  →  http://<server>/mboot.efi
+UEFI-HTTP  (option 60 == "HTTPClient")  →  http://<server>/ipxe/ipxe.efi
 UEFI-PXE   (option 93 == 7 / 9 / 11)    →  ipxe.efi via TFTP
 ```
 
@@ -78,12 +78,25 @@ option 77 och sin arch-kod; matchar UEFI-grenen först får den `ipxe.efi` igen
 och loopar för evigt. Därför har de senare klasserna `not member('iPXE')`.
 
 `UEFI-HTTP` måste echo:a tillbaka `HTTPClient` i option 60, annars ignorerar
-firmware svaret. Den går direkt på ESXi-laddaren — ingen iPXE, ingen TFTP.
-`www/mboot.efi.php` slår upp vilken version klienten är tilldelad och strömmar
-den laddaren; `mboot` frågar sedan efter `/boot.cfg` bredvid den.
+firmware svaret. Den delar ut **iPXE**, inte ESXi-laddaren. Att gå direkt på
+`/mboot.efi` fungerar, men hoppar över det enda steget i kedjan som kan vänta:
+en host som ännu inte är godkänd har ingen möjlighet att polla, eftersom
+`boot.cfg` serveras till en UEFI-laddare som inte kan göra om försöket. Via
+iPXE parkerar samma host i retry-loopen i `boot.ipxe.php` och börjar installera
+i samma stund som den godkänns.
 
-`UEFI-PXE` är den enda grenen som behöver en tftpd. Har alla servrar HTTP Boot i
-firmware kan du ta bort klassen och avinstallera tftpd.
+`UEFI-PXE` är den enda grenen som behöver en tftpd. Behåll den även om alla
+servrar klarar HTTP Boot: en engångs-boot-override via Redfish ber om `Pxe`, och
+vilken nätverkspost firmware då väljer är dess beslut. Båda klasserna delar ut
+samma `ipxe.efi`, så valet spelar ingen roll.
+
+`www/mboot.efi.php` finns kvar och fungerar. Peka `UEFI-HTTP` på den igen om du
+vill ha ESXi-laddaren direkt — men då försvinner väntläget för hostar som inte
+är godkända.
+
+> `ipxe.efi` är osignerad, så en host med Secure Boot påslaget vägrar ladda den.
+> Servrar levereras med Secure Boot på, och det stängs av över Redfish innan
+> första boot. Se `docs/bootchain.md`.
 
 Legacy BIOS finns medvetet inte med: ESXi 8 kräver UEFI.
 

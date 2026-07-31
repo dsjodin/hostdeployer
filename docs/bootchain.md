@@ -45,10 +45,9 @@ Från strömpåslag till färdig ESXi-host.
  │   läser esxi/<version>/boot.cfg → kernel + ~110 moduler        │
  └────┬───────────────────────────────────────────────────────────┘
       │ 5. genererat iPXE-skript:
-      │      kernel <url>/b.b00 runweasel ks=<url>/ks.cfg?mac=..
-      │      module <url>/jumpstrt.gz
-      │      module ... (~110 rader)
-      │      boot
+      │      chain <url>/esxi/<ver>/efi/boot/mboot.efi \
+      │            -c <url>/boot.cfg.php?mac=..
+      │      (saknas mboot i mediet: kernel + ~110 module-rader i stället)
       ▼
  ┌─────────────────┐
  │ ESXi-installer  │  mboot laddar kärna + moduler över HTTP
@@ -72,28 +71,49 @@ Från strömpåslag till färdig ESXi-host.
  └────────────────────────────────────────────────┘
 ```
 
-## Två bootvägar
+## Alla vägar går genom iPXE
 
-DHCP-klassen väljer väg. Båda slutar i samma `boot.cfg` och samma `ks.cfg`.
+DHCP-klassen väljer transport, men båda nätverksgrenarna delar ut samma
+`ipxe.efi`. Det är avsiktligt: iPXE är det enda steget i kedjan som kan vänta.
 
 ```
-  UEFI HTTP Boot                          iPXE
+  UEFI HTTP Boot                          UEFI PXE
   (option 60 = HTTPClient)                (option 93 = arch 7/9/11)
         │                                       │
-        │ option 67 = http://srv/mboot.efi      │ option 67 = ipxe.efi
-        ▼                                       ▼
-  www/mboot.efi.php                        ipxe.efi → boot.ipxe
-   löser upp hostens version                     │
-   och strömmar dess laddare                     ▼
-        │                                  www/boot.ipxe.php
-        │                                   chain <mboot> -c <boot.cfg.php>
+        │ option 67 =                           │ next-server + ipxe.efi
+        │   http://srv/ipxe/ipxe.efi            │ över TFTP
         └───────────────┬───────────────────────┘
                         ▼
+                  ipxe.efi startar
+                  gör egen DHCP, option 77 = "iPXE"
+                        ▼
+                  ipxe/boot.ipxe
+                        ▼
+                 www/boot.ipxe.php
+                  godkännandegrind + väntloop
+                        ▼
+                  chain <mboot> -c <boot.cfg.php>
+                        ▼
                  www/boot.cfg.php
-                  en omskrivning, två transporter
                         ▼
                    ESXi-installer
 ```
+
+**Varför inte `/mboot.efi` direkt.** Det fungerar — `www/mboot.efi.php` finns
+kvar och gör rätt — men en UEFI-laddare kan inte polla. En host som inte är
+godkänd får 403 från `boot.cfg.php`, mboot avbryter, och firmware går vidare
+till nästa bootenhet. Ingenting väntar, och ingenting registrerar en okänd host.
+Genom iPXE hamnar samma host i retry-loopen i `boot.ipxe.php` och startar
+installationen i samma stund som operatören godkänner den.
+
+Peka `UEFI-HTTP`-klassen på `/mboot.efi` igen om du vill ha den kortare kedjan
+och kan leva utan väntläget.
+
+**Secure Boot.** `ipxe.efi` är osignerad, så en host med Secure Boot påslaget
+vägrar ladda den — och servrar levereras med Secure Boot på. Det stängs av över
+Redfish innan första boot och slås på igen av `deployment_complete.php`. Det är
+därför iLO måste vara nåbart innan hosten bootar första gången, och därför
+upptäckten av ny hårdvara går via iLO i stället för via DHCP.
 
 **Varför inte 110 `module`-rader längre.** iPXE-vägen räknade tidigare upp
 varje modul ur `boot.cfg` i sitt eget skript. Det är en återimplementation av
