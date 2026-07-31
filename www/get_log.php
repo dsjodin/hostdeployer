@@ -82,14 +82,6 @@ if (!in_array($level, ['', 'INFO', 'WARNING', 'ERROR', 'DEBUG'], true)) {
     $level = '';
 }
 
-/**
- * @param int $bytes Size in bytes
- * @return string Human-readable size
- */
-function formatSize($bytes) {
-    return getReadableFileSize($bytes);
-}
-
 // Read at most the last 200 KB so a multi-megabyte log cannot exhaust memory.
 $maxSize = 200 * 1024;
 
@@ -127,7 +119,7 @@ if (count($lines) > $maxLines) {
 }
 
 $header = '# File: ' . $file
-    . ' | Size: ' . formatSize($fileSize)
+    . ' | Size: ' . getReadableFileSize($fileSize)
     . ' | Last modified: ' . date('Y-m-d H:i:s', filemtime($logPath)) . "\n";
 $header .= '# Showing last ' . count($lines) . ' lines'
     . ($filter !== '' ? " with filter: '$filter'" : '')

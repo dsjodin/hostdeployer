@@ -31,7 +31,11 @@ readonly ROOT=/srv/autodeploy
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SRC
 readonly CERT_DIR=/etc/ssl/autodeploy
-readonly PHP_VERSION=8.4
+
+# 8.4 is what trixie ships in main, so it is what a fresh appliance gets.
+# 8.1 is what composer.json requires and what the code actually uses.
+readonly PHP_PREFERRED=8.4
+readonly PHP_MINIMUM=8.1
 
 # --------------------------------------------------------------------------
 # Output
@@ -210,7 +214,8 @@ if [ -r /etc/os-release ]; then
         warn "This targets Debian; found '${ID:-unknown}'. Package names may differ."
     elif [ "${VERSION_ID:-}" != "13" ]; then
         warn "This targets Debian 13 (trixie); found ${VERSION_ID:-unknown}."
-        warn "PHP $PHP_VERSION is in trixie's main archive but not in earlier releases."
+        warn "PHP $PHP_PREFERRED is in trixie's main archive but not in earlier releases."
+        warn "An already-installed PHP $PHP_MINIMUM or newer is used instead when there is one."
     else
         info "Debian ${VERSION_ID} (${VERSION_CODENAME:-trixie})"
     fi
@@ -218,6 +223,54 @@ fi
 
 if [ "$(systemctl is-system-running 2>/dev/null || true)" = "offline" ]; then
     die "systemd is not running; this script manages services"
+fi
+
+# --------------------------------------------------------------------------
+# Which PHP the appliance runs on
+# --------------------------------------------------------------------------
+#
+# The version used to be hardcoded to 8.4, which made the script unusable on
+# any machine that already had a different one: the run got as far as the FPM
+# configuration and died on a missing /etc/php/8.4/fpm, even though the
+# application runs perfectly well on anything from 8.1.
+#
+# So prefer 8.4, accept whatever newer-or-equal FPM is already installed, and
+# fall back to 8.4 when there is no PHP at all -- that last case is a fresh
+# machine, where the package step below installs the preferred version.
+detect_php_version() {
+    local dir version
+    local -a installed=()
+
+    if [ -d "/etc/php/$PHP_PREFERRED/fpm" ]; then
+        echo "$PHP_PREFERRED"
+        return 0
+    fi
+
+    for dir in /etc/php/*/fpm; do
+        [ -d "$dir" ] || continue
+        version="${dir%/fpm}"
+        installed+=("${version##*/}")
+    done
+
+    if [ "${#installed[@]}" -gt 0 ]; then
+        # sort -V, not sort: one day 8.10 will sort below 8.4 lexically.
+        printf '%s\n' "${installed[@]}" | sort -Vr | head -n1
+        return 0
+    fi
+
+    echo "$PHP_PREFERRED"
+}
+
+PHP_VERSION="$(detect_php_version)"
+readonly PHP_VERSION
+
+if [ "$(printf '%s\n%s\n' "$PHP_MINIMUM" "$PHP_VERSION" | sort -V | head -n1)" != "$PHP_MINIMUM" ]; then
+    die "Found PHP $PHP_VERSION under /etc/php, but hostdeployer needs $PHP_MINIMUM or newer.
+     Install php${PHP_PREFERRED}-fpm and re-run."
+fi
+
+if [ "$PHP_VERSION" != "$PHP_PREFERRED" ]; then
+    info "Using the installed PHP $PHP_VERSION rather than $PHP_PREFERRED"
 fi
 
 # --------------------------------------------------------------------------

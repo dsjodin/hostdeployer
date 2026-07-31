@@ -42,10 +42,18 @@ function apiLog($message, $level = 'INFO') {
 /**
  * Emit a JSON response and stop.
  *
+ * The native never return type, rather than only a comment saying it exits.
+ * The dispatcher below is a switch whose cases end in a call to this function
+ * instead of a break, which is correct but relies on that fact: without it, a
+ * mistake here turns a GET into a PATCH by falling through. PHP enforces never
+ * at runtime and PHPStan reads it, so the reliance is now checked rather than
+ * asserted in a comment -- and the four cases that also carried a break were
+ * found by it, the break being unreachable in every one.
+ *
  * @param mixed $payload Response body
  * @param int   $status  HTTP status code
  */
-function apiRespond($payload, $status = 200) {
+function apiRespond($payload, $status = 200): never {
     http_response_code($status);
     echo (string)json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
@@ -57,7 +65,7 @@ function apiRespond($payload, $status = 200) {
  * @param string $message Human readable error
  * @param int    $status  HTTP status code
  */
-function apiError($message, $status = 400) {
+function apiError($message, $status = 400): never {
     apiRespond(['error' => $message], $status);
 }
 
@@ -90,7 +98,7 @@ function apiBody() {
  * @param array{message?: string, error?: string} $result Handler result
  * @param mixed                                   $body   Payload to return on success
  */
-function apiRespondToActionResult(array $result, $body = null) {
+function apiRespondToActionResult(array $result, $body = null): never {
     // Coalesced: the docblock types both keys as optional, and a handler that
     // returns early without setting 'error' would otherwise raise a warning and
     // compare null against '' -- reporting success as a 400 with no message.
@@ -172,7 +180,6 @@ try {
                 'default'  => $globalConfig['deployment']['default_version'] ?? '',
                 'versions' => array_keys($globalConfig['deployment']['esxi_versions'] ?? []),
             ]);
-            break;
 
         case 'images':
             apiHandleImages($method, array_slice($segments, 1));
@@ -189,7 +196,6 @@ try {
                 'success' => (bool)$scan['success'],
                 'output'  => $scan['output'],
             ], $scan['success'] ? 200 : 502);
-            break;
 
         default:
             apiError('Unknown endpoint', 404);
@@ -276,7 +282,6 @@ function apiHandleHosts($method, array $rest) {
                     apiError('Host not found', 404);
                 }
                 apiRespond($host);
-                // no break: apiRespond exits
 
             case 'PATCH':
                 apiRequire('write');
@@ -285,7 +290,6 @@ function apiHandleHosts($method, array $rest) {
                 // not the body, so a request cannot rename the host it edits.
                 $result = processAddHostAction(apiBody() + ['mac' => $mac]);
                 apiRespondToActionResult($result);
-                // no break
 
             case 'DELETE':
                 apiRequire('write');
@@ -294,7 +298,6 @@ function apiHandleHosts($method, array $rest) {
                     apiLog("Token '{$identity['name']}' deleted host $mac");
                 }
                 apiRespondToActionResult($result);
-                // no break
 
             default:
                 apiError('Method not allowed', 405);
@@ -368,7 +371,6 @@ function apiHandleHosts($method, array $rest) {
                 apiLog("Token '{$identity['name']}' approved host $mac");
             }
             apiRespondToActionResult($result);
-            break;
 
         case 'reinstall':
             apiRequire('approve');
@@ -377,7 +379,6 @@ function apiHandleHosts($method, array $rest) {
                 apiLog("Token '{$identity['name']}' queued host $mac for reinstallation");
             }
             apiRespondToActionResult($result);
-            break;
 
         default:
             apiError('Unknown endpoint', 404);

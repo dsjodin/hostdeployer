@@ -295,6 +295,11 @@ if (!function_exists('imageRegister')) {
             $config['deployment']['esxi_versions'][$version] = [
                 'path'        => $dir,
                 'description' => $description !== '' ? $description : $version,
+                // Counted once, here, rather than by walking ~500 files on
+                // every settings page load and every /api/v1/images call. An
+                // extracted medium does not change size on its own; when it
+                // does, imageRefreshSize() is the explicit way to say so.
+                'size'        => imageDirectorySize($dir),
             ];
 
             // The first image installed becomes the default, so a fresh
@@ -355,13 +360,19 @@ if (!function_exists('imageList')) {
 
             $present = is_dir($dir);
 
+            // present and bootable are two stats and one small file read, so
+            // they are checked live -- a version whose directory was removed
+            // by hand has to show as gone. The size is not: walking every file
+            // of every installed version, on every render, is the one part of
+            // this that grows with the number of images. It is recorded at
+            // installation and refreshed on request.
             $images[] = [
                 'version'     => (string)$version,
                 'description' => is_array($meta) ? (string)($meta['description'] ?? '') : '',
                 'path'        => $dir,
                 'present'     => $present,
                 'bootable'    => $present && imageLooksBootable($dir)['ok'],
-                'size'        => $present ? imageDirectorySize($dir) : 0,
+                'size'        => $present ? (int)(is_array($meta) ? ($meta['size'] ?? 0) : 0) : 0,
             ];
         }
 
@@ -369,9 +380,46 @@ if (!function_exists('imageList')) {
     }
 }
 
+if (!function_exists('imageRefreshSize')) {
+    /**
+     * Recount an installed image and record the result.
+     *
+     * The counterpart to the size imageRegister() stores: an operator who has
+     * changed what is on disk underneath the appliance needs a way to say so,
+     * and imageList() no longer finds out by itself.
+     *
+     * @param string $version Version name
+     * @return int The size in bytes, or 0 when the image is not on disk
+     */
+    function imageRefreshSize($version) {
+        $dir = imageDirectory($version);
+        if ($dir === null || !is_dir($dir)) {
+            return 0;
+        }
+
+        $size = imageDirectorySize($dir);
+
+        updateJsonConfig(AUTODEPLOY_GLOBAL_CONFIG, static function (array &$config) use ($version, $size) {
+            if (!isset($config['deployment']['esxi_versions'][$version])
+                || !is_array($config['deployment']['esxi_versions'][$version])) {
+                return false;
+            }
+
+            $config['deployment']['esxi_versions'][$version]['size'] = $size;
+
+            return true;
+        });
+
+        return $size;
+    }
+}
+
 if (!function_exists('imageDirectorySize')) {
     /**
      * Total size of an extracted image, in bytes.
+     *
+     * Walks the whole tree -- ~500 files for an ESXi medium -- so it is called
+     * at installation and on an explicit refresh, not on render.
      *
      * @param string $dir Directory
      * @return int

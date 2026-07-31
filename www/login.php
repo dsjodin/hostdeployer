@@ -75,14 +75,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     }
 }
 
-// Determine the base URL for assets
-$protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
-$host = $_SERVER['HTTP_HOST'];
-$baseUrl = $protocol . $host;
-
-// Calculate the correct path to CSS
-$scriptPath = dirname($_SERVER['SCRIPT_NAME']);
-$scriptPath = $scriptPath === '/' ? '' : $scriptPath;
+// The assets below are referenced relatively, so there is no base URL to
+// determine. There used to be four variables here computing one, none of them
+// read -- including $host, which took HTTP_HOST unvalidated. Harmless while
+// nothing used it, which is exactly what would have made it survive until
+// something did.
 ?>
 <!DOCTYPE html>
 <html lang="en">

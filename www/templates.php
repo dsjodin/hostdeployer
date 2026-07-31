@@ -130,7 +130,7 @@ function getTemplateFiles($templatesDir) {
             $filename = basename($file);
             // Both return false if the file went away between the glob and
             // the stat. Treat that as zero rather than letting false reach
-            // date() and formatFileSize().
+            // date() and getReadableFileSize().
             $modTime = filemtime($file) ?: 0;
             $size = filesize($file) ?: 0;
             
@@ -163,7 +163,7 @@ function getTemplateFiles($templatesDir) {
                 'modified' => $modTime,
                 'modified_formatted' => date('Y-m-d H:i:s', $modTime),
                 'size' => $size,
-                'size_formatted' => formatFileSize($size),
+                'size_formatted' => getReadableFileSize($size),
                 'backup_count' => count($backups),
                 'type' => $type
             ];
@@ -178,27 +178,6 @@ function getTemplateFiles($templatesDir) {
     return $templates;
 }
 
-/**
- * Format file size in human-readable format
- *
- * The return type is declared natively rather than only in the docblock: PHP
- * enforces one and not the other, and without it every array this value lands
- * in becomes unresolvable to a caller trying to reason about the shape.
- *
- * @param int $bytes Size in bytes
- * @return string Formatted size
- */
-function formatFileSize($bytes): string {
-    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    $i = 0;
-    
-    while ($bytes >= 1024 && $i < count($units) - 1) {
-        $bytes /= 1024;
-        $i++;
-    }
-    
-    return round($bytes, 2) . ' ' . $units[$i];
-}
 /**
  * Create a backup of a template file
  * 
@@ -288,7 +267,7 @@ function getTemplateBackups($templatePath) {
                 'timestamp' => $timestamp,
                 'date_formatted' => $dateFormatted,
                 'size' => filesize($file),
-                'size_formatted' => formatFileSize(filesize($file))
+                'size_formatted' => getReadableFileSize(filesize($file))
             ];
         }
         

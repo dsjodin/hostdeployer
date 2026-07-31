@@ -76,13 +76,13 @@ function renderSettingsContent($globalConfig) {
                                                 <div class="mb-3">
                                                     <label for="ilo_user" class="form-label">iLO Username:</label>
                                                     <input type="text" class="form-control" id="ilo_user" name="ilo_user" 
-                                                           value="<?php echo h($globalConfig['ilo']['admin_user']); ?>" required>
+                                                           value="<?php echo h($globalConfig['ilo']['admin_user'] ?? 'Administrator'); ?>" required>
                                                 </div>
                                                 
                                                 <div class="mb-3">
                                                     <label for="ilo_password" class="form-label">iLO Password:</label>
                                                     <input type="password" class="form-control" id="ilo_password" name="ilo_password"
-                                                           placeholder="<?php echo empty($globalConfig['ilo']['admin_password']) ? 'Not set' : 'Unchanged'; ?>"
+                                                           placeholder="<?php echo empty($globalConfig['ilo']['admin_password'] ?? '') ? 'Not set' : 'Unchanged'; ?>"
                                                            autocomplete="new-password">
                                                     <div class="form-text text-muted">Leave blank to keep the current password.</div>
                                                 </div>
@@ -91,13 +91,13 @@ function renderSettingsContent($globalConfig) {
                                                     <div class="col-md-6 mb-3">
                                                         <label for="ilo_scan_start" class="form-label">iLO Scan Range Start:</label>
                                                         <input type="text" class="form-control" id="ilo_scan_start" name="ilo_scan_start" 
-                                                               value="<?php echo h($globalConfig['ilo']['scan_range_start']); ?>" required>
+                                                               value="<?php echo h($globalConfig['ilo']['scan_range_start'] ?? ''); ?>" required>
                                                     </div>
                                                     
                                                     <div class="col-md-6 mb-3">
                                                         <label for="ilo_scan_end" class="form-label">iLO Scan Range End:</label>
                                                         <input type="text" class="form-control" id="ilo_scan_end" name="ilo_scan_end" 
-                                                               value="<?php echo h($globalConfig['ilo']['scan_range_end']); ?>" required>
+                                                               value="<?php echo h($globalConfig['ilo']['scan_range_end'] ?? ''); ?>" required>
                                                     </div>
                                                 </div>
                                                 
@@ -132,7 +132,7 @@ function renderSettingsContent($globalConfig) {
                                                     <div class="mb-3">
                                                         <label for="default_ilo_password" class="form-label">Default iLO Password:</label>
                                                         <input type="password" class="form-control" id="default_ilo_password" name="default_ilo_password"
-                                                               placeholder="<?php echo empty($credentials['ilo']['admin_password']) ? 'Not set' : 'Unchanged'; ?>"
+                                                               placeholder="<?php echo empty($credentials['ilo']['admin_password'] ?? '') ? 'Not set' : 'Unchanged'; ?>"
                                                                autocomplete="new-password">
                                                         <div class="form-text text-muted">Leave blank to keep the current password.</div>
                                                     </div>
@@ -470,6 +470,7 @@ function renderSettingsContent($globalConfig) {
                                                             <th>Version</th>
                                                             <th>Path</th>
                                                             <th>Description</th>
+                                                            <th>Size</th>
                                                             <th>Actions</th>
                                                         </tr>
                                                     </thead>
@@ -477,10 +478,25 @@ function renderSettingsContent($globalConfig) {
                                                         <?php foreach ($globalConfig['deployment']['esxi_versions'] as $version => $versionConfig): ?>
                                                         <tr>
                                                             <td><?php echo h($version); ?></td>
-                                                            <td><?php echo h($versionConfig['path']); ?></td>
-                                                            <td><?php echo h($versionConfig['description']); ?></td>
+                                                            <td><?php echo h($versionConfig['path'] ?? ''); ?></td>
+                                                            <td><?php echo h($versionConfig['description'] ?? ''); ?></td>
                                                             <td>
-                                                                <button type="button" class="btn btn-sm btn-danger" 
+                                                                <?php
+                                                                // Recorded at installation rather than counted on
+                                                                // render; Recount is how an operator who changed
+                                                                // what is on disk says so.
+                                                                $recordedSize = (int)($versionConfig['size'] ?? 0);
+                                                                echo $recordedSize > 0
+                                                                    ? h(getReadableFileSize($recordedSize))
+                                                                    : '<span class="text-muted">not counted</span>';
+                                                                ?>
+                                                            </td>
+                                                            <td>
+                                                                <button type="button" class="btn btn-sm btn-secondary"
+                                                                        onclick="document.getElementById('refresh_version').value = '<?php echo h($version); ?>'; this.form.submit();">
+                                                                    <i class="fas fa-sync"></i> Recount
+                                                                </button>
+                                                                <button type="button" class="btn btn-sm btn-danger"
                                                                         onclick="if(confirm('Are you sure you want to remove this version?')) { document.getElementById('remove_version').value = '<?php echo h($version); ?>'; this.form.submit(); }">
                                                                     <i class="fas fa-trash-alt"></i> Remove
                                                                 </button>
@@ -493,6 +509,7 @@ function renderSettingsContent($globalConfig) {
                                         </div>
 
                                         <input type="hidden" name="remove_version" id="remove_version" value="">
+                                        <input type="hidden" name="refresh_version" id="refresh_version" value="">
                                         
                                         <div class="alert alert-light border mb-3">
                                             <h6 class="alert-heading">Add New ESXi Version</h6>
@@ -1028,6 +1045,23 @@ function processSettingsActions($action, $postData) {
                 break;
             }
             
+            // Recount an image whose contents changed on disk underneath us.
+            // imageList() records the size at installation rather than walking
+            // ~500 files on every render, so this is the way to correct it.
+            if (!empty($postData['refresh_version'])) {
+                $versionToRefresh = (string)$postData['refresh_version'];
+                if (!isset($globalConfig['deployment']['esxi_versions'][$versionToRefresh])) {
+                    $result['error'] = "ESXi version '$versionToRefresh' is not configured";
+                    break;
+                }
+
+                $size = imageRefreshSize($versionToRefresh);
+                $result['message'] = $size > 0
+                    ? "ESXi version '$versionToRefresh' is " . getReadableFileSize($size)
+                    : "ESXi version '$versionToRefresh' is not present on disk";
+                break;
+            }
+
             // Handle removing a version if requested
             if (!empty($postData['remove_version'])) {
                 $versionToRemove = $postData['remove_version'];
@@ -1064,6 +1098,10 @@ function processSettingsActions($action, $postData) {
                 $globalConfig['deployment']['esxi_versions'][$newVersion] = [
                     'path' => $newPath,
                     'description' => $newDesc,
+                    // Counted here for the same reason imageRegister() counts
+                    // it: a version added by hand would otherwise show no size
+                    // until someone pressed Recount.
+                    'size' => imageDirectorySize($newPath),
                     'bootloader_url' => "http://{$globalConfig['webserver']['ip']}/esxi/$newVersion/efi/boot/bootx64.efi"
                 ];
                 
