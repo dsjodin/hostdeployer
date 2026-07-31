@@ -76,6 +76,8 @@ trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 # --------------------------------------------------------------------------
 
 SERVER_IP=""
+ADMIN_IP=""
+ADMIN_ALLOW=""
 INTERFACE=""
 DHCP_START=""
 DHCP_END=""
@@ -96,7 +98,12 @@ usage() {
     cat <<'USAGE'
 
 Options:
-  --server-ip ADDR        This server's address on the provisioning network
+  --server-ip ADDR        This server's address on the deploy network
+  --admin-ip ADDR         Address the dashboard and API bind to. Defaults to
+                          --server-ip, which is a single-interface install.
+                          Give a different address to keep the admin interface
+                          off the deploy network entirely.
+  --admin-allow CIDR      Network allowed to reach the dashboard and API
   --interface NAME        Interface Kea listens on
   --dhcp-range A-B        Address pool handed to booting servers
   --netmask MASK          Provisioning network mask (default 255.255.255.0)
@@ -117,6 +124,8 @@ USAGE
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-ip)       SERVER_IP="${2:-}"; shift 2 ;;
+        --admin-ip)        ADMIN_IP="${2:-}"; shift 2 ;;
+        --admin-allow)     ADMIN_ALLOW="${2:-}"; shift 2 ;;
         --interface)       INTERFACE="${2:-}"; shift 2 ;;
         --dhcp-range)      DHCP_START="${2%%-*}"; DHCP_END="${2##*-}"; shift 2 ;;
         --netmask)         NETMASK="${2:-}"; shift 2 ;;
@@ -254,6 +263,21 @@ if command -v ip >/dev/null 2>&1; then
 fi
 prompt SERVER_IP "This server's address on that network" "$DEFAULT_IP"
 valid_ip "$SERVER_IP" || die "Invalid server address: $SERVER_IP"
+
+# Defaults to the deploy address, which is the single-interface installation
+# and what every existing install has. Given a different address, the dashboard
+# and the API bind there and nowhere else -- the deploy network then carries the
+# boot chain and nothing an operator could log in to.
+ADMIN_IP="${ADMIN_IP:-$SERVER_IP}"
+valid_ip "$ADMIN_IP" || die "Invalid admin address: $ADMIN_IP"
+
+if [ "$ADMIN_IP" != "$SERVER_IP" ] && [ ! -d /sys/class/net ]; then
+    :
+elif [ "$ADMIN_IP" != "$SERVER_IP" ] \
+     && ! ip -o -4 addr show scope global 2>/dev/null | grep -q " ${ADMIN_IP}/"; then
+    die "No interface on this machine holds $ADMIN_IP.
+     nginx binds that address explicitly and will not start without it."
+fi
 
 prompt DHCP_START "First address in the DHCP pool"
 prompt DHCP_END   "Last address in the DHCP pool"
@@ -746,7 +770,7 @@ else
     openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
         -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.crt" \
         -subj "/CN=$HOSTNAME_FQDN" \
-        -addext "subjectAltName=DNS:$HOSTNAME_FQDN,DNS:localhost,IP:$SERVER_IP,IP:127.0.0.1" \
+        -addext "subjectAltName=DNS:$HOSTNAME_FQDN,DNS:localhost,IP:$ADMIN_IP,IP:127.0.0.1" \
         2>/dev/null
     chmod 0640 "$CERT_DIR/server.key"
     chgrp www-data "$CERT_DIR/server.key"
@@ -762,12 +786,21 @@ fi
 
 step "nginx"
 
-# The site config ships with a placeholder socket path; Debian's is versioned.
-sed "s#server unix:/var/run/php/php-fpm.sock;#server unix:${FPM_SOCKET};#" \
-    "$ROOT/nginx.conf" > /etc/nginx/sites-available/autodeploy
+# Generated rather than copied and patched. Every listener binds an explicit
+# address, and with one address the boot listener also redirects browsers to
+# TLS while with two it must not -- that is a different shape, not a different
+# string, and sed cannot add or remove a server block. Same reasoning as
+# deploy/kea-config.sh.
+NGINX_ARGS=(--deploy-ip "$SERVER_IP" --admin-ip "$ADMIN_IP"
+            --fpm-socket "$FPM_SOCKET" --root "$ROOT")
+if [ -n "$ADMIN_ALLOW" ]; then
+    NGINX_ARGS+=(--admin-allow "$ADMIN_ALLOW")
+fi
+
+"$ROOT/deploy/nginx-config.sh" "${NGINX_ARGS[@]}" > /etc/nginx/sites-available/autodeploy
 
 grep -q "unix:${FPM_SOCKET}" /etc/nginx/sites-available/autodeploy \
-    || die "Could not point the site at $FPM_SOCKET; check the upstream block in nginx.conf"
+    || die "The generated site does not point at $FPM_SOCKET; see deploy/nginx-config.sh"
 
 ln -sf /etc/nginx/sites-available/autodeploy /etc/nginx/sites-enabled/autodeploy
 
@@ -822,6 +855,9 @@ if [ -f "$ROOT/ipxe/ipxe.efi" ]; then
 
     if [ -f /etc/default/tftpd-hpa ]; then
         sed -i 's#^TFTP_DIRECTORY=.*#TFTP_DIRECTORY="/srv/tftp"#' /etc/default/tftpd-hpa
+        # Debian's default is ":69", every address. TFTP is part of the boot
+        # chain and belongs on the deploy network only.
+        sed -i "s#^TFTP_ADDRESS=.*#TFTP_ADDRESS=\"${SERVER_IP}:69\"#" /etc/default/tftpd-hpa
         systemctl enable --now tftpd-hpa >/dev/null 2>&1 || true
         systemctl restart tftpd-hpa || warn "tftpd-hpa did not start"
         info "TFTP serving /srv/tftp for the UEFI-PXE branch"
@@ -1065,9 +1101,19 @@ check "the web server can write the configuration" \
         \$c = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG);
         exit(\$c !== null && saveJsonConfig(AUTODEPLOY_GLOBAL_CONFIG, \$c) ? 0 : 1);"
 check "the stored ESXi password decrypts" sudo -u www-data "php${PHP_VERSION}" -r "putenv('AUTODEPLOY_ROOT=$ROOT'); require '$ROOT/lib/store.php'; exit(storeLoadCredentials('esxi')['root_password'] === '' ? 1 : 0);"
-check "the dashboard answers on 443"    curl -skf -o /dev/null "https://127.0.0.1/admin/login.php"
-check "the boot chain answers on 80"    bash -c "curl -sf -o /dev/null -w '%{http_code}' 'http://127.0.0.1/boot.ipxe.php?mac=00:00:00:00:00:01' | grep -q 200"
-check "the API rejects an unauthenticated call" bash -c "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/hosts | grep -q 401"
+check "the dashboard answers on 443"    curl -skf -o /dev/null "https://$ADMIN_IP/admin/login.php"
+
+# The point of a split installation, asserted rather than assumed. A listener
+# that quietly binds every address looks identical from the admin network and
+# is the whole finding.
+if [ "$ADMIN_IP" != "$SERVER_IP" ]; then
+    check "the dashboard is NOT reachable on the deploy network" \
+        bash -c "! curl -sk --connect-timeout 3 -o /dev/null 'https://$SERVER_IP/admin/login.php'"
+    check "the API is NOT reachable on the deploy network" \
+        bash -c "! curl -sk --connect-timeout 3 -o /dev/null 'https://$SERVER_IP/api/v1/hosts'"
+fi
+check "the boot chain answers on 80"    bash -c "curl -sf -o /dev/null -w '%{http_code}' 'http://$SERVER_IP/boot.ipxe.php?mac=00:00:00:00:00:01' | grep -q 200"
+check "the API rejects an unauthenticated call" bash -c "curl -sk -o /dev/null -w '%{http_code}' https://$ADMIN_IP/api/v1/hosts | grep -q 401"
 # keaStatus() never throws -- it is written to render a page -- so it reports
 # the reason in ['error'] instead. Passing that on is the difference between
 # "the socket is not there" and "the web server may not write to it", which
@@ -1092,9 +1138,9 @@ fi
 
 cat <<SUMMARY
 
-    Dashboard   https://$SERVER_IP/admin/   (user: admin)
-    API         https://$SERVER_IP/api/v1/hosts
-    Boot chain  http://$SERVER_IP/          DHCP pool $DHCP_START - $DHCP_END on $INTERFACE
+    Dashboard   https://$ADMIN_IP/admin/   (user: admin)
+    API         https://$ADMIN_IP/api/v1/hosts
+    Boot chain  http://$SERVER_IP/         DHCP pool $DHCP_START - $DHCP_END on $INTERFACE
 
     Next:
       1. Upload an ESXi ISO under Settings > ESXi Versions. Nothing can be

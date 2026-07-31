@@ -74,7 +74,10 @@ chown root:www-data *.json auth_config.php
 php /srv/autodeploy/lib/auth.php 'ditt-lösenord'   # klistra in hashen i auth_config.php
 
 # 4. Webbserver
-cp /srv/autodeploy/nginx.conf /etc/nginx/sites-available/autodeploy
+/srv/autodeploy/deploy/nginx-config.sh --deploy-ip 10.0.0.2 \
+    > /etc/nginx/sites-available/autodeploy
+# Ligger admin-UI:t på ett annat nät: lägg till --admin-ip och --admin-allow.
+# Se docs/network-segmentation.md.
 ln -sf /etc/nginx/sites-available/autodeploy /etc/nginx/sites-enabled/
 # Lägg ett certifikat på /etc/ssl/autodeploy/server.{crt,key}
 nginx -t && systemctl reload nginx
