@@ -12,7 +12,7 @@ genomgående *varför* något är som det är i stället för att upprepa vad ko
 säger. Det är ovanligt, och det är den egenskapen granskningen nedan försöker
 bevara.
 
-17 testfiler, PHPStan nivå 5, shellcheck och ruff i CI. Grunden finns.
+20 testfiler, PHPStan nivå 5, shellcheck och ruff i CI. Grunden finns.
 
 Statuskolumnen stämdes av mot koden 2026-07-31 och underhålls därefter.
 
@@ -22,8 +22,8 @@ Statuskolumnen stämdes av mot koden 2026-07-31 och underhålls därefter.
 | [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög | **Åtgärdad** |
 | [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel | **Åtgärdad** |
 | [C4](#c4) | `apiRespondToActionResult()` läser en nyckel som inte alltid finns | Medel | **Åtgärdad** |
-| [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel | Öppen |
-| [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel | Öppen |
+| [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel | **Åtgärdad** |
+| [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel | **Åtgärdad** |
 | [C7](#c7) | `imageDirectorySize()` statar hela ESXi-trädet vid varje rendering | Medel | Öppen |
 | [C8](#c8) | Saknade `??` ger `Undefined array key`-varningar i admin-UI:t | Låg | Öppen |
 | [C9](#c9) | Tre implementationer av filstorleksformatering | Låg | Öppen |
@@ -229,6 +229,12 @@ som var och en råkar returnera nästan samma sak.
 <a id="c5"></a>
 ## C5. Tre olika listor över var `boot.cfg` kan ligga
 
+> **Åtgärdad** i f0915ae. `bootCfgCandidates()`, `bootLoaderCandidates()` och
+> resolvarna i `lib/bootcfg.php` svarar för alla sex anropsställen.
+> `BootImageLayoutTest` formulerar buggen som ett test: uppladdningens
+> godkännande och UI:ts tillgänglighet måste svara lika för samma media, i
+> alla tre layouter.
+
 | Fil | Kandidater |
 |---|---|
 | `lib/images.php:180` | `boot.cfg`, `BOOT.CFG`, `efi/boot/boot.cfg` |
@@ -268,6 +274,15 @@ och fyra anropsställen som använder den.
 
 <a id="c6"></a>
 ## C6. Uppladdade mallar valideras inte mot generatorns tokenlista
+
+> **Åtgärdad** i f0915ae. `templateUnknownTokens()` i `lib/templates.php` är
+> enda implementationen; UI:t varnar vid varje spara och uppladdning, och CI
+> anropar samma funktion. Listan den kontrollerar mot är *härledd* ur
+> `kickstartVariables()` och `waitingTemplateVariables()` — båda grenarna av
+> vMotion-villkoret — i stället för handhållen, så den kan inte bli inaktuell
+> just när en token läggs till. Namn i `{{IF NAME}}` kontrolleras också, vilket
+> shell-varianten inte gjorde: `processConditionals()` läser ett okänt namn som
+> falskt, så en felstavad villkorsvariabel renderar tyst fel gren.
 
 CI-jobbet `templates` (`.github/workflows/ci.yml`) kontrollerar att varje
 `{{TOKEN}}` i `templates/*.cfg` faktiskt sätts av `generate_kickstart.php`.
@@ -396,7 +411,10 @@ noga — sökvägsvalideringen — ligger begravd överst.
 
 Tre filer:
 
-* `lib/templates.php` — `isValidTemplateName()`, `isValidBackupName()`,
+* `lib/templates.php` — finns sedan [C6](#c6), med `kickstartVariables()`,
+  `waitingTemplateVariables()`, `templateVariableNames()` och
+  `templateUnknownTokens()`. Hit flyttas `isValidTemplateName()`,
+  `isValidBackupName()`,
   `resolveTemplatePath()`, `resolveBackupPath()`, `templateNameFromBackup()`,
   `getTemplateFiles()`, `saveTemplateFile()`, `backupTemplateFile()`,
   `restoreTemplateFromBackup()`, `createTemplate()`. Testbart, och naturligt hem
@@ -567,7 +585,7 @@ Tre filer:
 |---|---|---|
 | P1 | [C15](#c15) | förutsättning för säkerhetsåtgärderna — **klar** |
 | P1 | [C1](#c1), [C2](#c2), [C3](#c3) | prestanda som växer med estatets storlek; låser bootande hostar — **klar** |
-| P2 | [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare |
+| P2 | [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare — **klar** |
 | P2 | [C7](#c7) | märks vid varje sidladdning på ett estat med flera versioner |
 | P3 | [C8](#c8)–[C14](#c14) | städning; ingen brådska, men billigt |
 | — | [C4](#c4) | **klar** |
@@ -588,7 +606,7 @@ sig:
 2. **Store-lagret** ([C1](#c1), [C2](#c2), [C3](#c3)) — hänger ihop: samma fyra
    anropare, samma modul. *Klar.*
 3. **Korrekthetsfällorna** ([C5](#c5), [C6](#c6)) — en boot.cfg-lista och en
-   tokenkontroll, båda flyttade dit de hör hemma.
+   tokenkontroll, båda flyttade dit de hör hemma. *Klar.*
 4. **Städning** ([C7](#c7)–[C14](#c14)) — där [C10](#c10) är stor nog att
    förtjäna en egen PR, särskilt eftersom den är förutsättningen för S14 i
    säkerhetsgranskningen (CSP utan `unsafe-inline`).
