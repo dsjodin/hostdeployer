@@ -110,9 +110,17 @@ if ($baseUrl === '') {
     $baseUrl = 'http://' . ($globalConfig['webserver']['ip'] ?? '');
 }
 
+// The host has passed the approval gate, so it may have a kickstart -- and the
+// token in this URL is what proves that to /ks.cfg, which otherwise answers
+// anything that can name an approved MAC with the ESXi root password hash.
+$bootToken = storeIssueBootToken($mac);
+if ($bootToken === '') {
+    bootCfgAbort("could not issue a boot token for $mac", 500);
+}
+
 $rendered = renderBootCfg($source, [
     'prefix'  => bootCfgHTTPPrefix($baseUrl, $version),
-    'ks_url'  => $baseUrl . '/ks.cfg?mac=' . $mac,
+    'ks_url'  => $baseUrl . '/ks.cfg?mac=' . $mac . '&t=' . $bootToken,
     'mac'     => $mac,
     'ip'      => $host['management_ip'] ?? '',
     'netmask' => $host['management_netmask'] ?? '255.255.255.0',

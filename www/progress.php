@@ -30,6 +30,14 @@ if ($mac === '') {
     exit("ERROR: missing or malformed MAC address\n");
 }
 
+// The token the kickstart carried into %firstboot. Without it any client on the
+// provisioning network could drive the progress of any host it could name.
+if (!storeVerifyBootToken($mac, (string)($_GET['t'] ?? ''))) {
+    http_response_code(403);
+    logMessage("Progress reported for $mac with a missing or invalid boot token", 'WARNING');
+    exit("ERROR: not authorised\n");
+}
+
 $step = (string)($_GET['step'] ?? 'firstboot');
 $steps = storeProgressSteps();
 

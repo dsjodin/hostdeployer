@@ -26,10 +26,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     $password = (string)($_POST['password'] ?? '');
     $clientIp = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
 
-    // Simple throttle: after 5 failures from this browser session, make the
-    // attacker wait. Brute forcing the login was previously unrestricted.
-    $attempts = (int)($_SESSION['login_attempts'] ?? 0);
-    $lockedUntil = (int)($_SESSION['login_locked_until'] ?? 0);
+    // Counted in the database, keyed by username and by source address. The
+    // counter used to be in $_SESSION, where a client that simply did not send
+    // the cookie back got a fresh one on every attempt -- so it throttled
+    // browsers and nothing else. See lib/auth.php.
+    $throttle = authThrottleStatus($username, $clientIp);
 
     // The form has always rendered csrfField() and nothing ever checked what
     // came back. A login form that does not verify its token can be submitted
@@ -41,27 +42,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     if (!verifyCsrfToken($_POST)) {
         auth_log("Login attempt with a missing or invalid CSRF token from $clientIp", 'WARNING');
         $error = 'Your session could not be verified. Please try again.';
-    } elseif ($lockedUntil > time()) {
-        $wait = $lockedUntil - time();
-        $error = "Too many failed login attempts. Please wait {$wait} seconds and try again.";
+    } elseif ($throttle['wait'] > 0) {
         auth_log("Login attempt while throttled for user '$username' from $clientIp", 'WARNING');
+
+        // What may be said depends on which key tripped. A lock on the address
+        // describes the caller, who already knows who they are. A lock on the
+        // username would confirm that the account exists, so it gets the same
+        // answer as a wrong password -- an attacker who has locked an account
+        // out learns only that they are still wrong.
+        $error = $throttle['by_address']
+            ? "Too many failed login attempts from this address. "
+                . "Please wait {$throttle['wait']} seconds and try again."
+            : 'Invalid username or password';
     } else {
         $userData = verifyCredentials($username, $password);
 
         if ($userData === null) {
-            $attempts++;
-            $_SESSION['login_attempts'] = $attempts;
-
-            if ($attempts >= 5) {
-                // Exponential-ish backoff, capped at five minutes.
-                $_SESSION['login_locked_until'] = time() + min(300, 15 * ($attempts - 4));
-            }
+            authThrottleFail($username, $clientIp);
 
             auth_log("Authentication failed for user '$username' from $clientIp", 'WARNING');
             // Deliberately generic: do not reveal whether the account exists.
             $error = 'Invalid username or password';
         } else {
-            unset($_SESSION['login_attempts'], $_SESSION['login_locked_until']);
+            authThrottleReset($username, $clientIp);
 
             establishSession($userData);
             auth_log("User $username successfully authenticated from $clientIp");

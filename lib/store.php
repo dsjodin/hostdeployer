@@ -685,6 +685,147 @@ if (!function_exists('storeMergeDiscoveredHosts')) {
 }
 
 // ---------------------------------------------------------------------------
+// Boot tokens
+// ---------------------------------------------------------------------------
+//
+// /ks.cfg used to answer anyone who could name a MAC belonging to an approved
+// host, and what it answered with was a complete kickstart: the SHA-512 crypt
+// of the ESXi root password every host in the estate is installed with, plus
+// its addressing. MAC addresses are not secrets -- they are in every ARP table
+// and every broadcast on the segment, and the space inside a known OUI is small
+// enough to walk. The same held for the callbacks: anything could mark a host
+// deployed and stop its installation.
+//
+// The endpoints cannot authenticate in the ordinary way, because the caller is
+// firmware and then an installer, neither of which holds a credential. But the
+// server hands each host a URL one step earlier in the chain, so it can put a
+// secret of its own in it.
+//
+// The token is issued when a host is given something to boot, travels in the
+// ks= URL, is rendered into the kickstart as {{BOOT_TOKEN}} so %firstboot can
+// carry it, and is cleared when the host reports completion. Only its digest is
+// stored, the same reasoning as lib/api_auth.php: what is on disk cannot be
+// replayed if the database is read.
+
+if (!function_exists('storeBootTokenLifetime')) {
+    /**
+     * How long a boot token stays valid, in seconds.
+     *
+     * Long enough for an installation plus %firstboot -- the token has to
+     * survive until the completion callback, which is the thing that clears
+     * it. Short enough that one left behind by a host that never finished
+     * stops working the same day.
+     *
+     * @return int
+     */
+    function storeBootTokenLifetime() {
+        return 86400;
+    }
+}
+
+if (!function_exists('storeIssueBootToken')) {
+    /**
+     * Mint a boot token for a host and return it.
+     *
+     * Replaces any previous one, so a host that reboots into the installer
+     * again invalidates the token from its last attempt.
+     *
+     * @param string $mac MAC address in any format
+     * @return string The raw token, or '' when the host is unknown
+     */
+    function storeIssueBootToken($mac) {
+        try {
+            $pdo = db();
+            $primary = storeResolveMac($pdo, $mac);
+            if ($primary === '') {
+                return '';
+            }
+
+            $token = bin2hex(random_bytes(32));
+
+            $pdo->prepare('UPDATE hosts SET boot_token = ?, boot_token_expires = ? WHERE mac = ?')
+                ->execute([hash('sha256', $token), time() + storeBootTokenLifetime(), $primary]);
+
+            return $token;
+        } catch (Throwable $e) {
+            logMessage('Could not issue a boot token: ' . $e->getMessage(), 'ERROR');
+            return '';
+        }
+    }
+}
+
+if (!function_exists('storeVerifyBootToken')) {
+    /**
+     * Whether a token is the one currently issued to a host.
+     *
+     * @param string $mac   MAC address in any format
+     * @param string $token Token supplied by the client
+     * @return bool
+     */
+    function storeVerifyBootToken($mac, $token) {
+        $token = (string)$token;
+        // Checked before the query so an empty parameter cannot match a host
+        // whose token was cleared, whatever the column holds.
+        if ($token === '') {
+            return false;
+        }
+
+        try {
+            $pdo = db();
+            $primary = storeResolveMac($pdo, $mac);
+            if ($primary === '') {
+                return false;
+            }
+
+            $statement = $pdo->prepare(
+                'SELECT boot_token, boot_token_expires FROM hosts WHERE mac = ?'
+            );
+            $statement->execute([$primary]);
+            $row = $statement->fetch();
+
+            if ($row === false || !is_string($row['boot_token']) || $row['boot_token'] === '') {
+                return false;
+            }
+
+            if ((int)$row['boot_token_expires'] < time()) {
+                return false;
+            }
+
+            return hash_equals($row['boot_token'], hash('sha256', $token));
+        } catch (Throwable $e) {
+            logMessage('Could not verify a boot token: ' . $e->getMessage(), 'ERROR');
+            return false;
+        }
+    }
+}
+
+if (!function_exists('storeClearBootToken')) {
+    /**
+     * Retire a host's boot token.
+     *
+     * @param string $mac MAC address in any format
+     * @return bool
+     */
+    function storeClearBootToken($mac) {
+        try {
+            $pdo = db();
+            $primary = storeResolveMac($pdo, $mac);
+            if ($primary === '') {
+                return false;
+            }
+
+            $pdo->prepare('UPDATE hosts SET boot_token = NULL, boot_token_expires = 0 WHERE mac = ?')
+                ->execute([$primary]);
+
+            return true;
+        } catch (Throwable $e) {
+            logMessage('Could not clear a boot token: ' . $e->getMessage(), 'ERROR');
+            return false;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Credentials
 // ---------------------------------------------------------------------------
 

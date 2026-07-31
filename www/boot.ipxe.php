@@ -276,8 +276,14 @@ if ($baseUrl === '') {
 }
 // The version was validated against [A-Za-z0-9._-] above.
 $imageUrl = $baseUrl . '/esxi/' . $esxiVersion;
-$ksUrl = $baseUrl . '/ks.cfg?mac=' . $mac;
 $bootCfgUrl = $baseUrl . '/boot.cfg.php?mac=' . $mac;
+
+// Only the fallback branch below builds a ks= URL of its own; the mboot path
+// gets one from boot.cfg.php, which issues its own token. Minted here anyway so
+// both branches hand the installer a URL that /ks.cfg will accept -- and the
+// later issue simply replaces this one, which is what should happen when a host
+// starts over.
+$ksUrl = $baseUrl . '/ks.cfg?mac=' . $mac . '&t=' . storeIssueBootToken($mac);
 
 if ($deploymentStatus === 'approved') {
     storeUpdateHost($mac, [
