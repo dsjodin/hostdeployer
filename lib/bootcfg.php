@@ -1,16 +1,77 @@
 <?php
 /**
- * Parsing of the ESXi installer's boot.cfg.
+ * The decisions the boot chain makes: who may boot, and what they are handed.
  *
- * The file lives on the installer media and names the kernel, the kernel
+ * boot.cfg lives on the installer media and names the kernel, the kernel
  * command line and the ~110 modules the bootloader has to load. Both the iPXE
  * script generator and (later) the UEFI HTTP boot path need to read it, so the
- * parsing lives here rather than inline in one endpoint.
+ * parsing lives here rather than inline in one endpoint. The approval gate is
+ * here for the same reason and a stronger one: it had drifted into two copies.
  *
  * Nothing in this file touches the filesystem, the request or the log. That is
  * deliberate: it is the part of the boot chain that is worth testing, and a
  * function that reads a file and writes a log is a function nobody tests.
  */
+
+// What bootGateGetDecision() can answer. Named constants rather than bare
+// strings because the call sites compare against them and a typo in a string
+// comparison against the gate fails open.
+if (!defined('BOOT_GATE_ALLOW')) {
+    define('BOOT_GATE_ALLOW', 'allow');
+}
+if (!defined('BOOT_GATE_DEPLOYED')) {
+    define('BOOT_GATE_DEPLOYED', 'deployed');
+}
+if (!defined('BOOT_GATE_REFUSE')) {
+    define('BOOT_GATE_REFUSE', 'refuse');
+}
+
+if (!function_exists('bootGateGetDecision')) {
+    /**
+     * Whether a host's deployment status may be handed something that installs.
+     *
+     * This is the approval gate. It decides nothing less than "does this
+     * machine get wiped and reinstalled", and until now it existed as two
+     * inline copies of the same condition, in www/boot.cfg.php and
+     * www/boot.ipxe.php, that had to agree without anything making them. If
+     * one of them ever admitted a status the other refused, a host awaiting
+     * approval would be handed an installer by whichever endpoint it reached
+     * first. One function, one test, two callers.
+     *
+     * The three answers exist because the endpoints legitimately differ in
+     * what they do with a finished host: boot.ipxe.php tells it to boot from
+     * local disk (a reinstall on every reboot is the failure this prevents),
+     * while boot.cfg.php has nothing to say to it and refuses. Both refuse
+     * everything that is not approved, which is the part that matters.
+     *
+     * Matching is exact, deliberately. Anything that normalises the value
+     * first -- trim(), strtolower() -- widens the set of strings that open the
+     * gate, and a gate that opens for " Approved\n" is a gate that opens for
+     * whatever else finds its way into the column.
+     *
+     * @param mixed $status deployment_status as stored, which may be missing
+     *                      or, from an older inventory, not a string at all
+     * @return string BOOT_GATE_ALLOW, BOOT_GATE_DEPLOYED or BOOT_GATE_REFUSE
+     */
+    function bootGateGetDecision($status) {
+        if (!is_string($status)) {
+            return BOOT_GATE_REFUSE;
+        }
+
+        // 'deploying' is here because a host reboots partway through an ESXi
+        // install and has to be able to fetch the same files again; the status
+        // is only set after the gate has already admitted it once.
+        if ($status === 'approved' || $status === 'deploying') {
+            return BOOT_GATE_ALLOW;
+        }
+
+        if ($status === 'deployed') {
+            return BOOT_GATE_DEPLOYED;
+        }
+
+        return BOOT_GATE_REFUSE;
+    }
+}
 
 if (!function_exists('parseBootCfg')) {
     /**

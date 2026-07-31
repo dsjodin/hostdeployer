@@ -4,33 +4,35 @@ Korrekthet, robusthet och struktur. Säkerhetsfynden ligger separat i
 [`SECURITY-REVIEW-2026-07.md`](SECURITY-REVIEW-2026-07.md). och nätverksfrågan i
 [`network-segmentation.md`](network-segmentation.md).
 
-Fortsättning på [`CODE-REVIEW.md`](CODE-REVIEW.md), som gjorde den förra
-omgången. Kodbasen är i väsentligt bättre skick än den beskrivningen antyder:
+Fortsättning på den förra omgången (`CODE-REVIEW.md`, borttagen i e7fa88d).
+Kodbasen är i väsentligt bättre skick än den beskrivningen antyder:
 duplicerade helpers är borta, storage-lagret är samlat i `lib/store.php`,
 inventariet ligger i SQLite med transaktioner, och kommentarerna förklarar
 genomgående *varför* något är som det är i stället för att upprepa vad koden
 säger. Det är ovanligt, och det är den egenskapen granskningen nedan försöker
 bevara.
 
-15 testfiler, PHPStan nivå 5, shellcheck och ruff i CI. Grunden finns.
+17 testfiler, PHPStan nivå 5, shellcheck och ruff i CI. Grunden finns.
 
-| # | Fynd | Grad |
-|---|---|---|
-| [C1](#c1) | `storeMutateHosts()` skriver om hela inventariet vid varje ändring | Hög |
-| [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög |
-| [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel |
-| [C4](#c4) | `apiRespondToActionResult()` läser en nyckel som inte alltid finns | Medel |
-| [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel |
-| [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel |
-| [C7](#c7) | `imageDirectorySize()` statar hela ESXi-trädet vid varje rendering | Medel |
-| [C8](#c8) | Saknade `??` ger `Undefined array key`-varningar i admin-UI:t | Låg |
-| [C9](#c9) | Tre implementationer av filstorleksformatering | Låg |
-| [C10](#c10) | `www/templates.php` är 1773 rader | Låg |
-| [C11](#c11) | Död kod i `login.php` | Låg |
-| [C12](#c12) | `switch`-fall som förlitar sig på att `apiRespond()` avslutar | Låg |
-| [C13](#c13) | Spårfiler i repot: `tree.txt`, dubblerad `boot.cfg` | Låg |
-| [C14](#c14) | PHP-versionen: 8.1 i CI, 8.4 hårdkodad i install.sh | Låg |
-| [C15](#c15) | Testerna täcker inga säkerhetsgränser | Medel |
+Statuskolumnen stämdes av mot koden 2026-07-31 och underhålls därefter.
+
+| # | Fynd | Grad | Status |
+|---|---|---|---|
+| [C1](#c1) | `storeMutateHosts()` skriver om hela inventariet vid varje ändring | Hög | Öppen |
+| [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög | Öppen |
+| [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel | Öppen |
+| [C4](#c4) | `apiRespondToActionResult()` läser en nyckel som inte alltid finns | Medel | **Åtgärdad** |
+| [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel | Öppen |
+| [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel | Öppen |
+| [C7](#c7) | `imageDirectorySize()` statar hela ESXi-trädet vid varje rendering | Medel | Öppen |
+| [C8](#c8) | Saknade `??` ger `Undefined array key`-varningar i admin-UI:t | Låg | Öppen |
+| [C9](#c9) | Tre implementationer av filstorleksformatering | Låg | Öppen |
+| [C10](#c10) | `www/templates.php` är 1772 rader | Låg | Öppen |
+| [C11](#c11) | Död kod i `login.php` | Låg | Öppen |
+| [C12](#c12) | `switch`-fall som förlitar sig på att `apiRespond()` avslutar | Låg | Öppen |
+| [C13](#c13) | Spårfiler i repot: `tree.txt`, dubblerad `boot.cfg` | Låg | Delvis |
+| [C14](#c14) | PHP-versionen: 8.1 i CI, 8.4 hårdkodad i install.sh | Låg | Öppen |
+| [C15](#c15) | Testerna täcker inga säkerhetsgränser | Medel | **Åtgärdad** |
 
 ---
 
@@ -159,8 +161,9 @@ en host raderas är den som inte använder den.
 
 Två implementationer av samma sak, där den ena är död, är den konstruktion som
 gör att en rättning hamnar i fel. Det finns redan ett exempel på precis det i
-`CODE-REVIEW.md` §4: `via_go` hade boot.cfg-omskrivningen implementerad två
-gånger och en fix nådde bara den ena.
+den förra granskningen §4: `via_go` hade boot.cfg-omskrivningen implementerad
+två gånger och en fix nådde bara den ena. Kommentaren överst i
+`www/boot.cfg.php` berättar samma historia.
 
 ### Åtgärd
 
@@ -172,6 +175,11 @@ inline-kopierade credential-städningen. Skillnaden i beteende — den ena retur
 
 <a id="c4"></a>
 ## C4. `apiRespondToActionResult()` läser en nyckel som inte alltid finns
+
+> **Åtgärdad.** `www/api.php:97` läser numera
+> `(string)($result['error'] ?? '')`. Den andra halvan av förslaget — att göra
+> handlarnas returtyp enhetlig så PHPStan kan kontrollera den — är inte gjord
+> och lever vidare som en egen fråga.
 
 `www/api.php:93-102`
 
@@ -353,10 +361,10 @@ Behåll `getReadableFileSize()`. Ta bort de två andra och byt anropsställena.
 ---
 
 <a id="c10"></a>
-## C10. `www/templates.php` är 1773 rader
+## C10. `www/templates.php` är 1772 rader
 
-Redan noterat som punkt 7 i `CODE-REVIEW.md`:s "Kvar att göra", och fortfarande
-den största filen i trädet. Den innehåller:
+Redan noterat som punkt 7 i den förra granskningens "Kvar att göra", och
+fortfarande den största filen i trädet. Den innehåller:
 
 * sökvägsvalidering (rad 44-114) — den säkerhetskritiska delen
 * filsystemsoperationer (rad 122-414)
@@ -440,10 +448,13 @@ avsikten maskinläsbar.
 <a id="c13"></a>
 ## C13. Spårfiler i repot
 
+> **Delvis åtgärdad.** `tree.txt` togs bort i 174f69f. `boot.cfg`-dubbletten och
+> `.gitattributes` står kvar.
+
 | Fil | Vad |
 |---|---|
-| `tree.txt` | en katalogutskrift, versionshanterad |
-| `boot.cfg` och `esxi/boot.cfg` | byte-identiska kopior av samma exempelfil |
+| `tree.txt` | en katalogutskrift, versionshanterad — *borttagen* |
+| `boot.cfg` och `esxi/boot.cfg` | nära identiska kopior av samma exempelfil |
 
 `install.sh:346-354` rsync:ar båda till `/srv/autodeploy`. `esxi/boot.cfg` hamnar
 i roten av bildkatalogen, där `imageList()` inte tittar men en operatör som
@@ -495,6 +506,14 @@ Och en kontroll att den funna versionen är ≥ 8.1, som `composer.json` kräver
 <a id="c15"></a>
 ## C15. Testerna täcker inga säkerhetsgränser
 
+> **Åtgärdad** i dd0d510. `tests/CsrfTest.php` och `tests/BootGateTest.php`
+> finns, och godkännandegrinden är utbruten till `bootGateGetDecision()` i
+> `lib/bootcfg.php` — vilket också tog bort dubbleringen mellan `boot.cfg.php`
+> och `boot.ipxe.php`. `roleHasPermission()` visade sig redan täckas av
+> `ApiAuthTest.php:105-135`, och `apiVerifyToken()` av samma fil; den
+> `tests/PermissionTest.php` som föreslogs nedan behövs alltså inte. Suiten är
+> 299 tester.
+
 15 testfiler, och de täcker de rena funktionerna väl: MAC-normalisering,
 netmask, `safePathJoin()`, mallrendering, `boot.cfg`-parsning, lösenordshashning,
 secrets, store, images, Kea. Det är rätt urval för de funktionerna.
@@ -530,8 +549,23 @@ Tre filer:
 
 | Prio | Fynd | Varför nu |
 |---|---|---|
-| P1 | [C1](#c1), [C2](#c2) | prestanda som växer med estatets storlek; låser bootande hostar |
-| P1 | [C15](#c15) | förutsättning för säkerhetsåtgärderna |
-| P2 | [C3](#c3), [C4](#c4), [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare |
+| P1 | [C15](#c15) | förutsättning för säkerhetsåtgärderna — **klar** |
+| P1 | [C1](#c1), [C2](#c2), [C3](#c3) | prestanda som växer med estatets storlek; låser bootande hostar |
+| P2 | [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare |
 | P2 | [C7](#c7) | märks vid varje sidladdning på ett estat med flera versioner |
 | P3 | [C8](#c8)–[C14](#c14) | städning; ingen brådska, men billigt |
+| — | [C4](#c4) | **klar** |
+
+## Ordning
+
+Fynden tas i fyra omgångar, en per PR, så att varje ändring går att granska för
+sig:
+
+1. **Testerna** ([C15](#c15)) — nätet som gör resten säker att röra. *Klar.*
+2. **Store-lagret** ([C1](#c1), [C2](#c2), [C3](#c3)) — hänger ihop: samma fyra
+   anropare, samma modul, och `StoreTest.php` täcker redan det som ändras.
+3. **Korrekthetsfällorna** ([C5](#c5), [C6](#c6)) — en boot.cfg-lista och en
+   tokenkontroll, båda flyttade dit de hör hemma.
+4. **Städning** ([C7](#c7)–[C14](#c14)) — där [C10](#c10) är stor nog att
+   förtjäna en egen PR, särskilt eftersom den är förutsättningen för S14 i
+   säkerhetsgranskningen (CSP utan `unsafe-inline`).

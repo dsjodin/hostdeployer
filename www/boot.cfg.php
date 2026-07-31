@@ -73,8 +73,11 @@ if ($host === null) {
 }
 
 $status = $host['deployment_status'] ?? 'unknown';
-if ($status !== 'approved' && $status !== 'deploying') {
+if (bootGateGetDecision($status) !== BOOT_GATE_ALLOW) {
     // A host that is not approved must not be handed something that installs.
+    // A deployed one is refused here too: there is nothing useful to say to a
+    // finished host in a boot.cfg, and boot.ipxe.php is the endpoint that
+    // sends it to its local disk.
     bootCfgAbort("host $mac is not approved for deployment (status: $status)", 403);
 }
 

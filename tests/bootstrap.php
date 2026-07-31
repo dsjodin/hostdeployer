@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 $root = sys_get_temp_dir() . '/hostdeployer-tests-' . getmypid();
 
-foreach (['config', 'logs', 'templates', 'esxi'] as $dir) {
+foreach (['config', 'logs', 'templates', 'esxi', 'sessions'] as $dir) {
     if (!is_dir("$root/$dir") && !mkdir("$root/$dir", 0o750, true) && !is_dir("$root/$dir")) {
         fwrite(STDERR, "could not create test fixture directory $root/$dir\n");
         exit(1);
@@ -20,6 +20,23 @@ foreach (['config', 'logs', 'templates', 'esxi'] as $dir) {
 }
 
 putenv("AUTODEPLOY_ROOT=$root");
+
+// CsrfTest exercises the real session helpers, which means a real session.
+// Keep its files inside the fixture tree: the CLI default is
+// /var/lib/php/sessions, which is root-owned on Debian and absent in some CI
+// images, and a test that needs a writable system directory is a test that
+// fails for reasons having nothing to do with the code.
+ini_set('session.save_path', "$root/sessions");
+
+// PHP flushes session data during request shutdown, after the shutdown
+// functions have run -- by which point the cleanup below has removed the
+// directory it would write to. Closing the session first is registered first,
+// because shutdown functions run in registration order.
+register_shutdown_function(static function (): void {
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+});
 
 // Remove the fixture tree when the run ends, however it ends.
 register_shutdown_function(static function () use ($root): void {

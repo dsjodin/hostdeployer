@@ -3,8 +3,8 @@
 Granskning av hela trädet: PHP under `lib/` och `www/`, `nginx.conf`,
 `install.sh`, `deploy/kea-config.sh`, Python-hjälparna och kickstart-mallarna.
 
-Fortsättning på [`CODE-REVIEW.md`](CODE-REVIEW.md), som gjorde den förra
-omgången. Två av punkterna i dess "Kvar att göra" — rollkontroll per åtgärd och
+Fortsättning på den förra omgången (`CODE-REVIEW.md`, borttagen i e7fa88d).
+Två av punkterna i dess "Kvar att göra" — rollkontroll per åtgärd och
 engångstoken i `ks=`-URL:en — är fortfarande öppna och står som **S1** och **S3**
 nedan, nu med en konkret design.
 

@@ -207,7 +207,9 @@ if ($host === null) {
 $hostname = $host['hostname'] ?? 'unknown';
 $deploymentStatus = $host['deployment_status'] ?? 'unknown';
 
-if ($deploymentStatus === 'deployed') {
+$gate = bootGateGetDecision($deploymentStatus);
+
+if ($gate === BOOT_GATE_DEPLOYED) {
     // Installation already finished; do not reinstall on every reboot.
     ipxeLog("Host $hostname ($mac) is already deployed - booting from local disk");
     ipxeFail([
@@ -216,7 +218,7 @@ if ($deploymentStatus === 'deployed') {
     ], 3);
 }
 
-if ($deploymentStatus !== 'approved' && $deploymentStatus !== 'deploying') {
+if ($gate !== BOOT_GATE_ALLOW) {
     ipxeLog("Host $hostname ($mac) is not approved for deployment: $deploymentStatus", 'WARNING');
     ipxeRetryOrGiveUp([
         "Server $hostname with MAC $mac is awaiting approval",
