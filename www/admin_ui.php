@@ -40,37 +40,32 @@ function renderHeader() {
         <div class="mini-logo">EA</div>
     </div>
 
+    <?php
+    // Only the tabs this account may actually open. Presentation, not
+    // security -- admin_dashboard.php refuses to render a tab the role does
+    // not hold whether it was offered here or typed into the address bar --
+    // but a menu whose entries answer "you may not do that" is worse than one
+    // that does not offer them.
+    $navigation = [
+        'dashboard' => ['fas fa-tachometer-alt', 'Dashboard'],
+        'hosts'     => ['fas fa-server',         'Manage Hosts'],
+        'templates' => ['fas fa-file-code',      'Templates'],
+        'scan'      => ['fas fa-search',         'Hardware Scan'],
+        'settings'  => ['fas fa-cogs',           'System Settings'],
+    ];
+    $currentTab = $_GET['tab'] ?? 'dashboard';
+    ?>
     <ul class="list-unstyled components">
-        <li>
-            <a href="?tab=dashboard" class="nav-link <?php echo !isset($_GET['tab']) || $_GET['tab'] === 'dashboard' ? 'active' : ''; ?>">
-                <i class="fas fa-tachometer-alt"></i>
-                <span>Dashboard</span>
-            </a>
-        </li>
-        <li>
-            <a href="?tab=hosts" class="nav-link <?php echo isset($_GET['tab']) && $_GET['tab'] === 'hosts' ? 'active' : ''; ?>">
-                <i class="fas fa-server"></i>
-                <span>Manage Hosts</span>
-            </a>
-        </li>
-        <li>
-            <a href="?tab=templates" class="nav-link <?php echo isset($_GET['tab']) && $_GET['tab'] === 'templates' ? 'active' : ''; ?>">
-                <i class="fas fa-file-code"></i>
-                <span>Templates</span>
-            </a>
-        </li>
-        <li>
-            <a href="?tab=scan" class="nav-link <?php echo isset($_GET['tab']) && $_GET['tab'] === 'scan' ? 'active' : ''; ?>">
-                <i class="fas fa-search"></i>
-                <span>Hardware Scan</span>
-            </a>
-        </li>
-        <li>
-            <a href="?tab=settings" class="nav-link <?php echo isset($_GET['tab']) && $_GET['tab'] === 'settings' ? 'active' : ''; ?>">
-                <i class="fas fa-cogs"></i>
-                <span>System Settings</span>
-            </a>
-        </li>
+        <?php foreach ($navigation as $tab => [$icon, $label]): ?>
+            <?php if (!hasPermission(tabPermission($tab))) { continue; } ?>
+            <li>
+                <a href="?tab=<?php echo h($tab); ?>"
+                   class="nav-link <?php echo $currentTab === $tab ? 'active' : ''; ?>">
+                    <i class="<?php echo h($icon); ?>"></i>
+                    <span><?php echo h($label); ?></span>
+                </a>
+            </li>
+        <?php endforeach; ?>
     </ul>
 </nav>
 

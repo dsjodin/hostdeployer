@@ -551,7 +551,7 @@ return [
     'roles' => [
         'admin' => [
             'description' => 'Full administrative access',
-            'permissions' => ['read', 'write', 'approve', 'scan', 'settings'],
+            'permissions' => ['read', 'write', 'approve', 'scan', 'settings', 'templates'],
         ],
         'operator' => [
             'description' => 'Deployment operations access',

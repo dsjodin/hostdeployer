@@ -13,7 +13,7 @@ Sorterat efter allvarlighetsgrad. Varje fynd har en föreslagen åtgärd.
 | # | Fynd | Grad | Status |
 |---|---|---|---|
 | [S1](#s1) | `/ks.cfg` lämnar ut ESXi-rootlösenordets hash oautentiserat | **Kritisk** | **åtgärdad** |
-| [S2](#s2) | Admin-UI:t gör ingen behörighetskontroll alls | **Kritisk** | öppen |
+| [S2](#s2) | Admin-UI:t gör ingen behörighetskontroll alls | **Kritisk** | **åtgärdad** |
 | [S3](#s3) | Oautentiserade tillståndsändringar i bootkedjan | **Hög** | **åtgärdad** |
 | [S4](#s4) | `deployment_complete.php` sover 10 s per request → DoS | **Hög** | öppen |
 | [S5](#s5) | Loginformuläret verifierar aldrig CSRF-token | **Hög** | **åtgärdad** |
@@ -31,9 +31,10 @@ Sorterat efter allvarlighetsgrad. Varje fynd har en föreslagen åtgärd.
 | [S17](#s17) | Ingen absolut sessionslivslängd | **Låg** | öppen |
 | [S18](#s18) | Timing-utjämningen i `verifyCredentials()` är sprö | **Info** | öppen |
 
-> ### Migrering efter S1/S3 — läs innan uppgradering
+> ### Migrering — läs innan uppgradering
 >
-> Bootkedjan kräver nu en token. Två saker slutar fungera tyst annars:
+> **Efter S1/S3.** Bootkedjan kräver nu en token. Två saker slutar annars
+> fungera tyst:
 >
 > 1. **Egna och redigerade kickstart-mallar.** De levererade mallarna har fått
 >    `&t={{BOOT_TOKEN}}` på anropen till `progress.php` och
@@ -50,8 +51,14 @@ Sorterat efter allvarlighetsgrad. Varje fynd har en föreslagen åtgärd.
 >    ```
 >
 > 2. **Installationer som pågår vid uppgraderingen.** Deras kickstart hämtades
->    innan tokens fanns. Boota om dem så går de genom bootkedjan igen och får
->    en token.
+>    innan tokens fanns. Boota om dem så går de genom bootkedjan igen och får en
+>    token.
+>
+> **Efter S2.** Rolltabellen har fått behörigheten `templates`. `install.sh`
+> skriver den för nya installationer men rör aldrig en befintlig
+> `auth_config.php`. En `admin` påverkas inte — `roleHasPermission()` svarar ja
+> på allt för den rollen — men ska någon annan roll få redigera kickstart-mallar
+> behöver `'templates'` läggas till i dess `permissions` för hand.
 
 ---
 
@@ -821,17 +828,18 @@ Genomfört, i den ordning det gjordes:
 | [S13](#s13) | `hasPermission('read')` i `www/get_log.php` |
 | [S10](#s10) | `is_uploaded_file()` före `imageInstall()` i `www/api.php` |
 | [S6](#s6) | `login_attempts`-tabell + `authThrottle*()` i `lib/auth.php`; `tests/LoginThrottleTest.php` |
+| [S2](#s2) | `actionPermission()`/`tabPermission()` i `lib/auth.php`, kontrollerade i `www/admin_dashboard.php` före dispatch och före rendering; navigationen döljer flikar; ny `templates`-behörighet; `tests/PermissionTest.php` |
 | [S1](#s1)+[S3](#s3) | `boot_token`-kolumner, `storeIssueBootToken()`/`storeVerifyBootToken()`/`storeClearBootToken()`, token krävd av `/ks.cfg`, `progress.php` och `deployment_complete.php`; `tests/BootTokenTest.php` |
 
 Kvar, i ordning efter värde per insats:
 
 | Steg | Fynd | Insats |
 |---|---|---|
-| 1 | [S2](#s2) behörighetstabell i dashboarden | en tabell + en `if`, plus ett test |
-| 2 | [S7](#s7) nätverksbindningar | se `network-segmentation.md` |
-| 3 | [S4](#s4) asynkron secure boot | en systemd-timer, ett litet skript |
-| 4 | [S8](#s8), [S9](#s9), [S11](#s11), [S12](#s12) | var för sig avgränsade |
-| 5 | [S14](#s14)–[S18](#s18) | härdning, ingen brådska |
+| 1 | [S7](#s7) nätverksbindningar | se `network-segmentation.md` |
+| 2 | [S4](#s4) asynkron secure boot | en systemd-timer, ett litet skript |
+| 3 | [S8](#s8), [S9](#s9), [S11](#s11), [S12](#s12) | var för sig avgränsade |
+| 4 | [S14](#s14)–[S18](#s18) | härdning, ingen brådska |
 
-Steg 1 är nu det som ger mest per insats: det stänger den kvarvarande vägen till
-RCE på hela estatet, och koden som behövs står redan skriven i [S2](#s2).
+Samtliga kritiska och höga fynd är åtgärdade. Det som återstår är avgränsat och
+kan tas i den takt som passar; [S7](#s7) är det som betyder mest i produktion,
+och är konfiguration snarare än kod.

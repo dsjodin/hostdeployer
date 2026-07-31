@@ -334,6 +334,107 @@ function hasPermission($permission) {
 }
 
 // ---------------------------------------------------------------------------
+// What each screen and each form action requires
+// ---------------------------------------------------------------------------
+//
+// hasPermission() existed from the start and was called in exactly one place.
+// The dashboard's POST router checked the CSRF token and then dispatched, so
+// every account could do everything every other account could: an operator
+// whose role grants read, approve and scan could rewrite the DHCP
+// configuration, read out the default credentials, and edit the kickstart
+// templates -- which run as root in %firstboot on every host that gets
+// installed. The REST API had this right all along; the UI simply never asked.
+//
+// The table is here rather than in www/ so it can be tested, and it is a table
+// rather than a check at each call site so that the answer to "what may an
+// operator do" is one thing to read.
+
+if (!defined('AUTODEPLOY_PERMISSIONS')) {
+    /** Every permission the application knows about. */
+    define('AUTODEPLOY_PERMISSIONS', ['read', 'write', 'approve', 'scan', 'settings', 'templates']);
+}
+
+/**
+ * The permission a dashboard form action requires.
+ *
+ * Returns null for actions everyone may perform, and false for an action that
+ * is not in the table at all. Unknown means refused: a handler added without a
+ * line here is unreachable rather than open to everybody, which is the failure
+ * worth choosing between the two.
+ *
+ * @param string $action Value of the form's "action" field
+ * @return string|null|false
+ */
+function actionPermission($action) {
+    static $map = [
+        'logout' => null,
+
+        // Hosts
+        'add_host'           => 'write',
+        'delete_host'        => 'write',
+        'toggle_secure_boot' => 'write',
+        'approve_host'       => 'approve',
+        'reinstall_host'     => 'approve',
+
+        // Hardware discovery
+        'scan_ilo' => 'scan',
+
+        // Settings. save_default_credentials writes the ESXi root password
+        // every host is installed with and the iLO account that can power
+        // cycle the estate, which is why 'settings' is not granted by default.
+        'save_global_config'       => 'settings',
+        'save_auto_registration'   => 'settings',
+        'save_security_settings'   => 'settings',
+        'save_network_settings'    => 'settings',
+        'save_default_credentials' => 'settings',
+        'save_kickstart_templates' => 'settings',
+        'save_esxi_versions'       => 'settings',
+        'upload_esxi_image'        => 'settings',
+
+        // Templates. A permission of their own rather than 'settings': a
+        // kickstart template is a script that runs as root on every host this
+        // appliance installs, so being able to edit one is closer to shell
+        // access on the estate than to changing a setting.
+        'save_template'               => 'templates',
+        'create_template'             => 'templates',
+        'upload_template'             => 'templates',
+        'delete_template'             => 'templates',
+        'backup_template'             => 'templates',
+        'restore_backup'              => 'templates',
+        'delete_backup'               => 'templates',
+        'download_template'           => 'templates',
+        'update_template_assignments' => 'templates',
+    ];
+
+    return array_key_exists((string)$action, $map) ? $map[(string)$action] : false;
+}
+
+/**
+ * The permission a dashboard tab requires to be rendered.
+ *
+ * Hiding a tab is presentation; this is what stops the content being served.
+ * The settings screen names the iLO account and says whether each password is
+ * set, and the template editor shows what runs on every host -- neither is
+ * something to hand to a role that may not change them.
+ *
+ * @param string $tab Tab name
+ * @return string The permission required
+ */
+function tabPermission($tab) {
+    static $map = [
+        'dashboard' => 'read',
+        'hosts'     => 'read',
+        'scan'      => 'scan',
+        'settings'  => 'settings',
+        'templates' => 'templates',
+    ];
+
+    // An unknown tab is answered with the strictest thing available rather
+    // than waved through; the caller resolves it to the dashboard anyway.
+    return $map[(string)$tab] ?? 'settings';
+}
+
+// ---------------------------------------------------------------------------
 // Login throttling
 // ---------------------------------------------------------------------------
 //

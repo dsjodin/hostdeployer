@@ -81,6 +81,18 @@ if (!in_array($activeTab, $validTabs, true)) {
     $activeTab = 'dashboard';
 }
 
+// A tab the account may not use resolves to the dashboard rather than to an
+// error: the navigation does not offer it, so arriving here means a bookmark
+// or a typed URL, and neither deserves a scolding. Hiding it in the navigation
+// is presentation; this is the part that decides what gets rendered.
+if (!hasPermission(tabPermission($activeTab))) {
+    dashboard_log(
+        "User {$authenticated['username']} was redirected away from the '$activeTab' tab",
+        'WARNING'
+    );
+    $activeTab = 'dashboard';
+}
+
 $message = '';
 $error = '';
 $scanOutput = '';
@@ -91,9 +103,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Every state-changing request must carry a valid CSRF token. Without
     // this, any page the operator visits could silently approve a host,
     // rewrite the DHCP configuration or delete a template.
+    // What this action costs, before anything is dispatched. Until this was
+    // here the router checked the CSRF token and then handed every action to
+    // its handler, none of which look at the role -- so any account could edit
+    // the kickstart templates that run as root on every host, write the
+    // default credentials, or reconfigure DHCP. See actionPermission().
+    $permission = actionPermission($action);
+
     if (!verifyCsrfToken($_POST)) {
         dashboard_log("Rejected action '$action' with invalid CSRF token", 'WARNING');
         $error = 'Your session has expired or the request could not be verified. Please try again.';
+    } elseif ($permission === false) {
+        // Not in the table: either a typo or a handler somebody added without
+        // deciding who may reach it. Refusing is the answer to both.
+        dashboard_log("Rejected unknown action '$action'", 'WARNING');
+        $error = 'That action is not recognised.';
+    } elseif ($permission !== null && !hasPermission($permission)) {
+        dashboard_log(
+            "Denied '$action' for user {$authenticated['username']} "
+                . "(role {$authenticated['role']}, needs '$permission')",
+            'WARNING'
+        );
+        $error = "Your account does not have permission to do that.";
     } elseif ($action === 'logout') {
         logout();
         exit;
