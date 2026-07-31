@@ -18,9 +18,9 @@ Statuskolumnen stämdes av mot koden 2026-07-31 och underhålls därefter.
 
 | # | Fynd | Grad | Status |
 |---|---|---|---|
-| [C1](#c1) | `storeMutateHosts()` skriver om hela inventariet vid varje ändring | Hög | Öppen |
-| [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög | Öppen |
-| [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel | Öppen |
+| [C1](#c1) | `storeMutateHosts()` skriver om hela inventariet vid varje ändring | Hög | **Åtgärdad** |
+| [C2](#c2) | Bootendpoints läser hela inventariet trots indexerad uppslagning | Hög | **Åtgärdad** |
+| [C3](#c3) | Två vägar att radera en host, med olika sidoeffekter | Medel | **Åtgärdad** |
 | [C4](#c4) | `apiRespondToActionResult()` läser en nyckel som inte alltid finns | Medel | **Åtgärdad** |
 | [C5](#c5) | Tre olika listor över var `boot.cfg` kan ligga | Medel | Öppen |
 | [C6](#c6) | Uppladdade mallar valideras inte mot generatorns tokenlista | Medel | Öppen |
@@ -38,6 +38,13 @@ Statuskolumnen stämdes av mot koden 2026-07-31 och underhålls därefter.
 
 <a id="c1"></a>
 ## C1. `storeMutateHosts()` skriver om hela inventariet vid varje ändring
+
+> **Åtgärdad** i 5ebc891. De fyra anroparna går mot `storeUpdateHost()`,
+> `storeAddHost()` och `storeDeleteHost()`. Uppmätt på ett inventarium med 500
+> hostar gick ett godkännande från 48,7 ms till 0,51 ms.
+> `storeUpsertHostRow()` skriver om `host_macs` bara när listan ändrats.
+> `storeMutateHosts()` behåller sin enda verkliga anropare,
+> `storeMergeDiscoveredHosts()`.
 
 `lib/store.php:348-388`
 
@@ -113,6 +120,12 @@ bara vid skillnad.
 <a id="c2"></a>
 ## C2. Bootendpoints läser hela inventariet trots indexerad uppslagning
 
+> **Åtgärdad** i 5ebc891. Båda endpoints använder `storeFindHost()`. Den
+> skillnad som fanns kvar att lösa — att `storeFindHost()` svarar `null` både
+> för "okänd host" och "databasen går inte att öppna" — täcks av
+> `storeIsReachable()`, som ersätter läsningen av hela inventariet enbart för
+> att se om läsningen fungerade.
+
 `www/boot.ipxe.php:80,91,146-147` och `www/generate_kickstart.php:53,74`
 
 ```php
@@ -147,6 +160,9 @@ inläst.
 
 <a id="c3"></a>
 ## C3. Två vägar att radera en host, med olika sidoeffekter
+
+> **Åtgärdad** i 5ebc891. `processDeleteHostAction()` anropar
+> `storeDeleteHost()`, och den inline-kopierade credential-städningen är borta.
 
 `lib/store.php:498-530` (`storeDeleteHost()`) och
 `www/host_functions.php:262-305` (`processDeleteHostAction()`)
@@ -550,11 +566,18 @@ Tre filer:
 | Prio | Fynd | Varför nu |
 |---|---|---|
 | P1 | [C15](#c15) | förutsättning för säkerhetsåtgärderna — **klar** |
-| P1 | [C1](#c1), [C2](#c2), [C3](#c3) | prestanda som växer med estatets storlek; låser bootande hostar |
+| P1 | [C1](#c1), [C2](#c2), [C3](#c3) | prestanda som växer med estatets storlek; låser bootande hostar — **klar** |
 | P2 | [C5](#c5), [C6](#c6) | korrekthetsfällor med känd utlösare |
 | P2 | [C7](#c7) | märks vid varje sidladdning på ett estat med flera versioner |
 | P3 | [C8](#c8)–[C14](#c14) | städning; ingen brådska, men billigt |
 | — | [C4](#c4) | **klar** |
+
+En sak föll ut av omgång 2 och står kvar: `findHostByMac()` i `lib/utils.php`
+har efter [C2](#c2) ingen anropare utanför testerna. `hostMatchesMac()` har
+kvar en, i `storeMergeDiscoveredHosts()`. En död funktion vid sidan av
+`storeFindHost()` är precis den konstruktion [C3](#c3) handlar om, så den bör
+antingen tas bort med sina tester eller få en kommentar som säger varför den
+finns kvar.
 
 ## Ordning
 
@@ -563,7 +586,7 @@ sig:
 
 1. **Testerna** ([C15](#c15)) — nätet som gör resten säker att röra. *Klar.*
 2. **Store-lagret** ([C1](#c1), [C2](#c2), [C3](#c3)) — hänger ihop: samma fyra
-   anropare, samma modul, och `StoreTest.php` täcker redan det som ändras.
+   anropare, samma modul. *Klar.*
 3. **Korrekthetsfällorna** ([C5](#c5), [C6](#c6)) — en boot.cfg-lista och en
    tokenkontroll, båda flyttade dit de hör hemma.
 4. **Städning** ([C7](#c7)–[C14](#c14)) — där [C10](#c10) är stor nog att
