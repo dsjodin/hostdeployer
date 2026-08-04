@@ -114,6 +114,8 @@ if (!function_exists('dbCreateSchema')) {
                 reinstall_requested TEXT,
                 boot_token          TEXT,
                 boot_token_expires  INTEGER NOT NULL DEFAULT 0,
+                ilo_cert_sha256     TEXT    NOT NULL DEFAULT '',
+                secure_boot_off_since TEXT,
                 extra               TEXT    NOT NULL DEFAULT '{}'
             )
 SQL);
@@ -171,8 +173,16 @@ if (!function_exists('dbAddMissingColumns')) {
         // Added when the boot chain stopped handing the ESXi root password
         // hash to anything that could name a MAC. See storeIssueBootToken().
         $added = [
-            'boot_token'         => 'TEXT',
-            'boot_token_expires' => 'INTEGER NOT NULL DEFAULT 0',
+            'boot_token'          => 'TEXT',
+            'boot_token_expires'  => 'INTEGER NOT NULL DEFAULT 0',
+            // iLO ships a self-signed certificate, so there is no chain to
+            // validate. The digest recorded on first contact is what every
+            // later connection is checked against instead.
+            'ilo_cert_sha256'     => "TEXT NOT NULL DEFAULT ''",
+            // When Secure Boot was turned off to let the unsigned ipxe.efi
+            // load. Every host now passes through that state, so a deployment
+            // that dies partway has to be findable.
+            'secure_boot_off_since' => 'TEXT',
         ];
 
         foreach ($added as $name => $definition) {

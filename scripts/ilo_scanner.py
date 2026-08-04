@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
+"""Discover service processors on the BMC network and register what they run.
+
+This is where a server enters the inventory. It sweeps the iLO/iDRAC network,
+asks every card that answers for its serial number, its host NIC MAC addresses
+and its Secure Boot state, and stages Secure Boot off so the unsigned ipxe.efi
+can load when the machine is eventually booted.
+
+The address is not the identity. Infoblox owns the BMC network and a card can
+come back on a different address, so each one is reverse-resolved and stored by
+name. The name also carries the machine's identity -- orbesx1001-ilo.dc.infra
+belongs to orbesx1001 -- which is where a discovered host gets its hostname.
+
+The join to the boot chain is the serial number. A booting host reports its
+MAC and its SMBIOS serial, and the MAC a machine PXE boots from is not
+necessarily the one the BMC lists first. Serial survives a NIC swap, a
+re-cabling and a firmware upgrade; it is what boot.ipxe.php matches on.
+"""
 
 import argparse
 import ipaddress
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
-import urllib3
-
 from autodeploy_api import ApiError, AutodeployApi
-
-# iLO ships a self-signed certificate by default, so verification is off and
-# the resulting warning would otherwise be printed once per request.
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from redfish_client import FingerprintMismatch, Redfish, RedfishError
 
 # All paths derive from AUTODEPLOY_ROOT so the tree can be relocated without
 # editing the scripts.
@@ -42,12 +54,12 @@ logger = logging.getLogger("ilo_scanner")
 _global_config = None
 _api = None
 
+
 def format_mac(mac):
-    """Format MAC address consistently"""
-    # Remove any separator and convert to lowercase
-    mac = mac.lower().replace(':', '').replace('-', '')
-    # Format with colons
-    return ':'.join(mac[i:i+2] for i in range(0, len(mac), 2))
+    """Normalise a MAC to lowercase colon-separated form."""
+    mac = str(mac).lower().replace(":", "").replace("-", "")
+    return ":".join(mac[i:i + 2] for i in range(0, len(mac), 2))
+
 
 def load_global_config():
     """Load (and cache) the global configuration file."""
@@ -63,6 +75,7 @@ def load_global_config():
 
     return _global_config
 
+
 def api():
     """The shared API client, created on first use."""
     global _api
@@ -74,22 +87,15 @@ def api():
 
 
 def get_ilo_credentials(mac_address=None):
-    """Return (username, password), preferring host-specific overrides.
-
-    The API applies the override, so this no longer has to know that the file
-    stores them under an ilo.hosts.<mac> key.
-    """
+    """Return (username, password), preferring host-specific overrides."""
     creds = api().get_credentials("ilo", mac_address)
-
-    if mac_address and creds:
-        logger.debug(f"Using iLO credentials resolved for {mac_address}")
 
     return creds.get("admin_user") or creds.get("username"), \
         creds.get("admin_password") or creds.get("password")
 
 
 def check_host_reachable(ip):
-    """Check if a host is reachable via ping"""
+    """Whether an address answers a single ping."""
     try:
         result = subprocess.run(
             ["ping", "-c", "1", "-W", "1", ip],
@@ -102,335 +108,254 @@ def check_host_reachable(ip):
     except OSError:
         return False
 
-def test_ilo_auth(ip, username, password):
-    """Test iLO authentication without using the redfish library"""
+
+def reverse_resolve(ip):
+    """The PTR name for an address, or None when there is not one.
+
+    Infoblox allocates the BMC addresses and registers the names, so the PTR
+    is the authoritative link between an address and a machine. Falling back to
+    the raw address is correct but lossy: nothing downstream can then derive a
+    hostname, and the record breaks the next time the card is re-addressed.
+    """
     try:
-        # Try a direct REST call to test credentials
-        url = f"https://{ip}/redfish/v1/Systems/1"
-        response = requests.get(
-            url, 
-            auth=(username, password),
-            verify=False,
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            logger.info(f"Successfully authenticated to iLO at {ip}")
-            return True
-        else:
-            logger.warning(f"Authentication failed for iLO at {ip}: Status code {response.status_code}")
-            logger.debug(f"Response: {response.text}")
-            return False
-    except Exception as e:
-        logger.warning(f"Error testing iLO authentication at {ip}: {e}")
+        name, _, _ = socket.gethostbyaddr(ip)
+    except OSError:
+        logger.debug(f"No PTR record for {ip}")
+        return None
+
+    return name.rstrip(".").lower() or None
+
+
+def hostname_from_bmc_name(bmc_name, suffix):
+    """Derive the machine's hostname from its BMC's name.
+
+    orbesx1001-ilo.dc.infra -> orbesx1001, given a suffix of "-ilo".
+
+    Returns None when the name does not carry the suffix, rather than guessing.
+    A wrong hostname here reaches the kickstart.
+    """
+    if not bmc_name:
+        return None
+
+    label = bmc_name.split(".")[0]
+
+    if suffix and label.endswith(suffix):
+        return label[:-len(suffix)] or None
+
+    return None
+
+
+def collect_mac_addresses(rf, system_path):
+    """Every host NIC MAC the BMC will report.
+
+    Two collections because they are not equally populated across vendors and
+    firmware revisions: EthernetInterfaces is the one that carries MACAddress
+    directly, NetworkInterfaces has to be walked into its adapter ports. Both
+    are tried and the results merged, because a card that reports partial
+    information under one is common enough to have cost a scan before.
+    """
+    macs = []
+
+    ethernet = rf.get(f"{system_path}/EthernetInterfaces")
+    for member in (ethernet or {}).get("Members", []):
+        path = member.get("@odata.id")
+        if not path:
+            continue
+        try:
+            interface = rf.get(path)
+        except RedfishError as e:
+            logger.debug(f"{rf.address}: {path} unreadable: {e}")
+            continue
+        mac = (interface or {}).get("MACAddress") or (interface or {}).get("MacAddress")
+        if mac:
+            macs.append(format_mac(mac))
+
+    if not macs:
+        network = rf.get(f"{system_path}/NetworkInterfaces")
+        for member in (network or {}).get("Members", []):
+            path = member.get("@odata.id")
+            if not path:
+                continue
+            try:
+                adapter = rf.get(path)
+            except RedfishError as e:
+                logger.debug(f"{rf.address}: {path} unreadable: {e}")
+                continue
+            for key in ("MACAddress", "MacAddress"):
+                if (adapter or {}).get(key):
+                    macs.append(format_mac(adapter[key]))
+
+    # Order matters only in that the first one becomes the record's primary
+    # MAC; the rest are stored as secondaries and match just as well.
+    seen = set()
+    unique = []
+    for mac in macs:
+        if mac and mac not in seen:
+            seen.add(mac)
+            unique.append(mac)
+
+    return unique
+
+
+def read_secure_boot(rf, system_path):
+    """Current Secure Boot state as 'enabled', 'disabled' or 'unknown'.
+
+    Lowercase because that is what the inventory and the admin UI compare
+    against. The previous scanner returned "Enabled", which matched nothing and
+    left every scanned host displaying an unknown state.
+    """
+    try:
+        resource = rf.get(f"{system_path}/SecureBoot")
+    except RedfishError as e:
+        logger.debug(f"{rf.address}: SecureBoot resource unreadable: {e}")
+        resource = None
+
+    if resource:
+        if "SecureBootEnable" in resource:
+            return "enabled" if resource["SecureBootEnable"] else "disabled"
+        if resource.get("SecureBootCurrentBoot"):
+            return "enabled" if resource["SecureBootCurrentBoot"] == "Enabled" else "disabled"
+
+    try:
+        bios = rf.get(f"{system_path}/Bios")
+    except RedfishError as e:
+        logger.debug(f"{rf.address}: BIOS attributes unreadable: {e}")
+        return "unknown"
+
+    attributes = (bios or {}).get("Attributes", {})
+    for key in ("SecureBoot", "SecureBootEnable", "SecureBootStatus"):
+        if key not in attributes:
+            continue
+        value = attributes[key]
+        if isinstance(value, bool):
+            return "enabled" if value else "disabled"
+        if isinstance(value, str):
+            if value.lower() in ("enabled", "enable", "on", "true", "yes", "1"):
+                return "enabled"
+            if value.lower() in ("disabled", "disable", "off", "false", "no", "0"):
+                return "disabled"
+
+    return "unknown"
+
+
+def stage_secure_boot_off(rf, system_path):
+    """Stage Secure Boot off, to take effect at the machine's next POST.
+
+    Nothing is rebooted here. The scan runs across a live BMC network and a
+    reset issued by a discovery sweep is the one mistake in this tool that
+    cannot be undone.
+
+    The standard SecureBoot resource is tried first because both iLO and iDRAC
+    implement it; the vendor BIOS attribute is the fallback for firmware that
+    does not.
+    """
+    try:
+        rf.patch(f"{system_path}/SecureBoot", {"SecureBootEnable": False})
+        return True
+    except RedfishError as e:
+        logger.debug(f"{rf.address}: SecureBoot resource not writable ({e}); trying BIOS")
+
+    try:
+        rf.patch(f"{system_path}/Bios/Settings", {"Attributes": {"SecureBoot": "Disabled"}})
+        return True
+    except RedfishError as e:
+        logger.warning(f"{rf.address}: could not stage Secure Boot off: {e}")
         return False
 
-def get_mac_addresses_from_response(response_text):
-    """Extract MAC addresses from a JSON response string"""
-    mac_addresses = []
-    try:
-        data = json.loads(response_text)
-        
-        # Look for common MAC address fields in the response
-        if "MacAddress" in data:
-            mac_addresses.append(data["MacAddress"])
-        elif "MACAddress" in data:
-            mac_addresses.append(data["MACAddress"])
-        
-        # Look in network adapters if present
-        if "NetworkAdapters" in data and isinstance(data["NetworkAdapters"], list):
-            for adapter in data["NetworkAdapters"]:
-                if "MacAddress" in adapter:
-                    mac_addresses.append(adapter["MacAddress"])
-        
-        # Look in EthernetInterfaces if present
-        if "EthernetInterfaces" in data and isinstance(data["EthernetInterfaces"], list):
-            for interface in data["EthernetInterfaces"]:
-                if "MACAddress" in interface:
-                    mac_addresses.append(interface["MACAddress"])
-    except (ValueError, TypeError) as e:
-        logger.debug(f"Could not parse MAC addresses from response: {e}")
 
-    return mac_addresses
+def scan_bmc(address, username, password, fingerprint=None, disable_secure_boot=False):
+    """Interrogate one service processor.
 
-def detect_secure_boot_status(ip, username, password):
-    """Enhanced secure boot detection with multiple methods"""
-    secure_boot_status = "Unknown"
-    
-    # Method 1: Try Bios Attributes
+    @return dict for storeMergeDiscoveredHosts(), or None
+    """
     try:
-        bios_url = f"https://{ip}/redfish/v1/Systems/1/Bios"
-        bios_response = requests.get(
-            bios_url,
-            auth=(username, password),
-            verify=False,
-            timeout=5
-        )
-        
-        if bios_response.status_code == 200:
-            bios_data = bios_response.json()
-            
-            # The full attribute set is large and contains site-specific BIOS
-            # settings; log it only at DEBUG.
-            logger.debug(f"BIOS data for {ip}: {json.dumps(bios_data)}")
-            
-            # Look for different possible attribute names
-            attributes = bios_data.get("Attributes", {})
-            
-            # Common attribute names for secure boot
-            secure_boot_keys = ["SecureBoot", "SecureBootEnable", "SecureBootStatus", 
-                               "Secure Boot", "SecureBootOption", "HPE_SecureBoot"]
-            
-            # Check for any matching keys
-            for key in secure_boot_keys:
-                if key in attributes:
-                    value = attributes[key]
-                    logger.info(f"Found secure boot attribute '{key}' with value '{value}' for {ip}")
-                    
-                    # Convert various status formats to standard format
-                    if isinstance(value, bool):
-                        secure_boot_status = "Enabled" if value else "Disabled"
-                    elif isinstance(value, str):
-                        if value.lower() in ["enabled", "enable", "on", "true", "yes", "1"]:
-                            secure_boot_status = "Enabled"
-                        elif value.lower() in ["disabled", "disable", "off", "false", "no", "0"]:
-                            secure_boot_status = "Disabled"
-                        else:
-                            # Keep actual value if we can't normalize it
-                            secure_boot_status = value
-                    
-                    # Break after finding first valid attribute
-                    if secure_boot_status != "Unknown":
-                        break
-            
-            # Scan all attributes for anything that might be secure boot related
-            if secure_boot_status == "Unknown":
-                logger.info(f"Scanning all BIOS attributes for secure boot related settings for {ip}")
-                for key, value in attributes.items():
-                    if "secure" in key.lower() and "boot" in key.lower():
-                        logger.info(f"Found potential secure boot attribute '{key}' with value '{value}' for {ip}")
-    except Exception as e:
-        logger.warning(f"Error checking BIOS for secure boot status at {ip}: {e}")
-    
-    # Method 2: Try SecureBoot resource if available
-    if secure_boot_status == "Unknown":
-        try:
-            secure_boot_url = f"https://{ip}/redfish/v1/Systems/1/SecureBoot"
-            secure_boot_response = requests.get(
-                secure_boot_url,
-                auth=(username, password),
-                verify=False,
-                timeout=5
-            )
-            
-            if secure_boot_response.status_code == 200:
-                secure_boot_data = secure_boot_response.json()
-                logger.debug(f"SecureBoot resource data for {ip}: {json.dumps(secure_boot_data)}")
-                
-                # Look for the SecureBootEnable property
-                if "SecureBootEnable" in secure_boot_data:
-                    secure_boot_status = "Enabled" if secure_boot_data["SecureBootEnable"] else "Disabled"
-                    logger.info(f"Found SecureBootEnable={secure_boot_data['SecureBootEnable']} for {ip}")
-                # Look for SecureBootCurrentBoot property
-                elif "SecureBootCurrentBoot" in secure_boot_data:
-                    if secure_boot_data["SecureBootCurrentBoot"] == "Enabled":
-                        secure_boot_status = "Enabled"
-                    else:
-                        secure_boot_status = "Disabled"
-                    logger.info(f"Found SecureBootCurrentBoot={secure_boot_data['SecureBootCurrentBoot']} for {ip}")
-        except Exception as e:
-            logger.warning(f"Error checking dedicated SecureBoot resource at {ip}: {e}")
-    
-    # Method 3: Try Boot resource if available
-    if secure_boot_status == "Unknown":
-        try:
-            boot_url = f"https://{ip}/redfish/v1/Systems/1/Boot"
-            boot_response = requests.get(
-                boot_url,
-                auth=(username, password),
-                verify=False,
-                timeout=5
-            )
-            
-            if boot_response.status_code == 200:
-                boot_data = boot_response.json()
-                logger.debug(f"Boot resource data for {ip}: {json.dumps(boot_data)}")
-                
-                # Check for secure boot settings in Boot resource
-                if "SecureBoot" in boot_data:
-                    secure_boot_status = "Enabled" if boot_data["SecureBoot"] else "Disabled"
-                    logger.info(f"Found SecureBoot={boot_data['SecureBoot']} in Boot resource for {ip}")
-        except Exception as e:
-            logger.warning(f"Error checking Boot resource at {ip}: {e}")
-    
-    # Method 4: Try BIOS registry if available
-    if secure_boot_status == "Unknown":
-        try:
-            registry_url = f"https://{ip}/redfish/v1/Registries"
-            registry_response = requests.get(
-                registry_url,
-                auth=(username, password),
-                verify=False,
-                timeout=5
-            )
-            
-            if registry_response.status_code == 200:
-                # Only noted, not parsed: the registry would have to be walked
-                # to resolve attribute names, and every iLO seen so far reports
-                # secure boot through the paths tried above.
-                logger.debug(f"Registry resource present at {ip}, not parsed")
-        except Exception as e:
-            logger.warning(f"Error checking Registry resource at {ip}: {e}")
-    
-    logger.info(f"Final secure boot status for {ip}: {secure_boot_status}")
-    return secure_boot_status
-
-def scan_ilo_with_requests(ip, username, password):
-    """Scan a single iLO using direct HTTP requests instead of relying on redfish library"""
-    try:
-        # Base URL for Redfish API
-        base_url = f"https://{ip}/redfish/v1"
-        
-        # Get system information
-        system_url = f"{base_url}/Systems/1"
-        system_response = requests.get(
-            system_url,
-            auth=(username, password),
-            verify=False,
-            timeout=10
-        )
-        
-        if system_response.status_code != 200:
-            logger.error(f"Failed to get system information from {ip}: Status {system_response.status_code}")
-            return None
-        
-        system_data = system_response.json()
-        
-        # Try to get network information
-        mac_addresses = []
-        
-        # Try NetworkInterfaces endpoint
-        try:
-            network_url = f"{base_url}/Systems/1/NetworkInterfaces"
-            network_response = requests.get(
-                network_url,
-                auth=(username, password),
-                verify=False,
-                timeout=5
-            )
-            
-            if network_response.status_code == 200:
-                network_data = network_response.json()
-                
-                # Get each network interface
-                if "Members" in network_data and isinstance(network_data["Members"], list):
-                    for member in network_data["Members"]:
-                        if "@odata.id" in member:
-                            interface_url = f"https://{ip}{member['@odata.id']}"
-                            interface_response = requests.get(
-                                interface_url,
-                                auth=(username, password),
-                                verify=False,
-                                timeout=5
-                            )
-                            
-                            if interface_response.status_code == 200:
-                                # Extract MAC addresses
-                                macs = get_mac_addresses_from_response(interface_response.text)
-                                mac_addresses.extend(macs)
-        except Exception as e:
-            logger.warning(f"Error getting network interfaces for {ip}: {e}")
-        
-        # Try EthernetInterfaces endpoint if no MACs found yet
-        if not mac_addresses:
-            try:
-                eth_url = f"{base_url}/Systems/1/EthernetInterfaces"
-                eth_response = requests.get(
-                    eth_url,
-                    auth=(username, password),
-                    verify=False,
-                    timeout=5
-                )
-                
-                if eth_response.status_code == 200:
-                    eth_data = eth_response.json()
-                    
-                    # Get each ethernet interface
-                    if "Members" in eth_data and isinstance(eth_data["Members"], list):
-                        for member in eth_data["Members"]:
-                            if "@odata.id" in member:
-                                interface_url = f"https://{ip}{member['@odata.id']}"
-                                interface_response = requests.get(
-                                    interface_url,
-                                    auth=(username, password),
-                                    verify=False,
-                                    timeout=5
-                                )
-                                
-                                if interface_response.status_code == 200:
-                                    interface_data = interface_response.json()
-                                    if "MACAddress" in interface_data:
-                                        mac_addresses.append(interface_data["MACAddress"])
-            except Exception as e:
-                logger.warning(f"Error getting ethernet interfaces for {ip}: {e}")
-        
-        # Use enhanced secure boot detection
-        secure_boot_status = detect_secure_boot_status(ip, username, password)
-        
-        # Create result with collected information
-        result = {
-            "ilo_ip": ip,
-            "serial_number": system_data.get("SerialNumber", "Unknown"),
-            "mac_address": mac_addresses[0] if mac_addresses else "Unknown",
-            "additional_macs": mac_addresses[1:] if len(mac_addresses) > 1 else [],
-            "model": system_data.get("Model", "Unknown"),
-            "manufacturer": system_data.get("Manufacturer", "Unknown"),
-            "bios_version": system_data.get("BiosVersion", "Unknown"),
-            "secure_boot_status": secure_boot_status,
-            "hostname": "",
-            "fqdn": "",
-            "management_ip": "",
-            "management_netmask": "",
-            "management_gateway": "",
-            "vlan_id": 0,
-            "datastore": {
-                "name": "datastore1",
-                "drives": []
-            },
-            "vlans": {
-                "management": 0,
-                "vmotion": 0,
-                "storage": 0
-            },
-            "deployment_status": "pending",
-            "deployment_time": None
-        }
-        
-        logger.info(f"Successfully scanned iLO at {ip}, found {result['model']} with S/N: {result['serial_number']}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error scanning iLO at {ip} with direct requests: {e}")
+        rf = Redfish(address, username, password, fingerprint=fingerprint)
+    except FingerprintMismatch as e:
+        # Never downgraded to a warning and never re-pinned: a BMC presenting a
+        # different certificate is either a replaced card or something else
+        # answering on its address, and both need a person.
+        logger.error(str(e))
+        return None
+    except RedfishError as e:
+        logger.debug(f"{address}: {e}")
         return None
 
-def scan_ilo(ip, username, password):
-    """Scan a single iLO IP and retrieve system information"""
-    logger.info(f"Checking iLO at {ip}")
-    
+    try:
+        system_path = rf.system_path()
+        system = rf.get(system_path) or {}
+    except RedfishError as e:
+        logger.warning(f"{address}: {e}")
+        return None
+
+    serial = str(system.get("SerialNumber") or "").strip()
+    macs = collect_mac_addresses(rf, system_path)
+    secure_boot = read_secure_boot(rf, system_path)
+
+    if disable_secure_boot and secure_boot != "disabled":
+        if stage_secure_boot_off(rf, system_path):
+            logger.info(f"{address}: staged Secure Boot off, applies at next POST")
+            secure_boot = "disabled"
+
+    result = {
+        "ilo_ip": address,
+        "serial_number": serial,
+        "mac_address": macs[0] if macs else "",
+        "additional_macs": macs[1:],
+        "model": system.get("Model") or "",
+        "manufacturer": system.get("Manufacturer") or "",
+        "bios_version": system.get("BiosVersion") or "",
+        "secure_boot_status": secure_boot,
+        "ilo_cert_sha256": rf.fingerprint,
+        "deployment_status": "pending",
+    }
+
+    logger.info(
+        f"{address}: {result['manufacturer']} {result['model']} "
+        f"S/N {serial or 'unknown'}, {len(macs)} MAC(s), Secure Boot {secure_boot}"
+    )
+
+    return result
+
+
+def scan_address(ip, username, password, known, suffix, disable_secure_boot):
+    """Resolve, identify and record one address from the sweep."""
     if not check_host_reachable(ip):
-        logger.debug(f"Host {ip} not reachable, skipping")
         return None
-    
-    # First test if we can authenticate
-    if not test_ilo_auth(ip, username, password):
-        logger.error(f"Authentication failed for iLO at {ip}, skipping")
-        return None
-    
-    # Use direct HTTP requests instead of relying on redfish library
-    return scan_ilo_with_requests(ip, username, password)
 
-def scan_ip_range(start_ip, end_ip, username, password, max_threads=16):
-    """Scan a range of IP addresses for iLO systems."""
+    bmc_name = reverse_resolve(ip)
+    address = bmc_name or ip
+
+    if bmc_name is None:
+        logger.warning(f"{ip} has no PTR record; storing it by address")
+
+    # The pinned fingerprint, when this card has been seen before. Looked up by
+    # the name it is stored under, which is why the PTR lookup happens first.
+    previous = known.get(address, {})
+
+    result = scan_bmc(
+        address,
+        username,
+        password,
+        fingerprint=previous.get("ilo_cert_sha256") or None,
+        # A machine that is already running ESXi must not have its BIOS
+        # touched by a discovery sweep. The BMC network carries production.
+        disable_secure_boot=disable_secure_boot
+        and previous.get("deployment_status") not in ("deployed", "deploying"),
+    )
+
+    if result is None:
+        return None
+
+    hostname = hostname_from_bmc_name(bmc_name, suffix)
+    if hostname:
+        result["hostname"] = hostname
+
+    return result
+
+
+def sweep(start_ip, end_ip, username, password, known, suffix,
+          disable_secure_boot, max_threads=16):
+    """Scan a range of addresses on the BMC network."""
     try:
         start = int(ipaddress.IPv4Address(start_ip))
         end = int(ipaddress.IPv4Address(end_ip))
@@ -447,16 +372,20 @@ def scan_ip_range(start_ip, end_ip, username, password, max_threads=16):
         return []
 
     ip_list = [str(ipaddress.IPv4Address(ip)) for ip in range(start, end + 1)]
-    logger.info(f"Starting scan of {len(ip_list)} IP addresses from {start_ip} to {end_ip}")
-    logger.info(f"Using iLO username: {username}")
+    logger.info(f"Scanning {len(ip_list)} addresses from {start_ip} to {end_ip}")
 
     results = []
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        futures = {executor.submit(scan_ilo, ip, username, password): ip for ip in ip_list}
+        futures = {
+            executor.submit(
+                scan_address, ip, username, password, known, suffix, disable_secure_boot
+            ): ip
+            for ip in ip_list
+        }
 
-        # as_completed() so a slow host does not stall the rest, and each
-        # result is unwrapped in its own try: one raising future used to abort
-        # the entire scan and discard every host found so far.
+        # as_completed() so a slow host does not stall the rest, and each result
+        # is unwrapped in its own try: one raising future used to abort the
+        # entire scan and discard every host found so far.
         for future in as_completed(futures):
             ip = futures[future]
             try:
@@ -468,44 +397,66 @@ def scan_ip_range(start_ip, end_ip, username, password, max_threads=16):
             if not result:
                 continue
 
-            # Re-scan with host-specific credentials when they differ.
+            # Re-read with host-specific credentials when the estate account is
+            # not the one this machine uses.
             mac = result.get("mac_address")
-            if mac and mac != "Unknown":
+            if mac:
                 host_username, host_password = get_ilo_credentials(mac)
-                if (host_username, host_password) != (username, password):
-                    logger.info(f"Re-scanning {result['ilo_ip']} with host-specific credentials")
+                if host_username and (host_username, host_password) != (username, password):
+                    logger.info(f"Re-reading {result['ilo_ip']} with host-specific credentials")
                     try:
-                        new_result = scan_ilo(result["ilo_ip"], host_username, host_password)
+                        retry = scan_bmc(
+                            result["ilo_ip"], host_username, host_password,
+                            fingerprint=result.get("ilo_cert_sha256"),
+                        )
                     except Exception as e:
-                        logger.warning(f"Re-scan of {result['ilo_ip']} failed: {e}")
-                        new_result = None
+                        logger.warning(f"Re-read of {result['ilo_ip']} failed: {e}")
+                        retry = None
 
-                    if new_result:
-                        results.append(new_result)
+                    if retry:
+                        retry.setdefault("hostname", result.get("hostname", ""))
+                        results.append(retry)
                         continue
 
             results.append(result)
 
-    logger.info(f"Scan complete. Found {len(results)} iLO systems")
+    logger.info(f"Scan complete. Found {len(results)} service processors")
     return results
 
-def update_hosts_config(scan_results):
-    """Send scan results to the API, which merges them into the inventory.
 
-    The matching rules -- serial first, then any known MAC, and never
-    overwrite an existing mac_address -- now live in lib/store.php next to the
-    storage and inside its lock.
+def known_bmcs():
+    """What the inventory already records, keyed by BMC address.
+
+    Two things come from here: the pinned certificate for a card that has been
+    seen before, and whether the machine behind it is already deployed.
     """
+    index = {}
+
+    for host in api().get_hosts():
+        address = host.get("ilo_ip")
+        if address:
+            index[str(address).lower()] = host
+
+    return index
+
+
+def update_hosts_config(scan_results):
+    """Send scan results to the API, which merges them into the inventory."""
     return api().merge_discovered(scan_results)
 
 
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description="Scan a range of iLO interfaces for HPE servers")
-    parser.add_argument("--start", help="First iLO IP to scan (defaults to global_config.json)")
-    parser.add_argument("--end", help="Last iLO IP to scan (defaults to global_config.json)")
+    parser = argparse.ArgumentParser(
+        description="Discover iLO/iDRAC service processors on the BMC network"
+    )
+    parser.add_argument("--start", help="First address to scan (defaults to global_config.json)")
+    parser.add_argument("--end", help="Last address to scan (defaults to global_config.json)")
     parser.add_argument("--threads", type=int, default=16, help="Concurrent scans (default: 16)")
     parser.add_argument("--dry-run", action="store_true", help="Scan but do not update the inventory")
+    parser.add_argument(
+        "--keep-secure-boot", action="store_true",
+        help="Report Secure Boot state without staging it off",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -530,22 +481,36 @@ def main():
     end_ip = args.end or ilo_config.get("scan_range_end")
 
     if not start_ip or not end_ip:
-        logger.error("No iLO scan range configured; set ilo.scan_range_start and ilo.scan_range_end")
+        logger.error("No BMC scan range configured; set ilo.scan_range_start and ilo.scan_range_end")
         return 1
 
-    logger.info(f"iLO scan range: {start_ip} to {end_ip}")
+    suffix = ilo_config.get("name_suffix", "-ilo")
+    disable_secure_boot = not args.keep_secure_boot
 
-    scan_results = scan_ip_range(start_ip, end_ip, username, password, max_threads=args.threads)
+    if disable_secure_boot:
+        logger.info(
+            "Secure Boot will be staged off on discovered machines that are not "
+            "already deployed; nothing is rebooted by this scan"
+        )
+
+    results = sweep(
+        start_ip, end_ip, username, password,
+        known=known_bmcs(),
+        suffix=suffix,
+        disable_secure_boot=disable_secure_boot,
+        max_threads=args.threads,
+    )
 
     if args.dry_run:
-        print(f"Scan complete (dry run). Found {len(scan_results)} iLO systems; the inventory was not modified.")
+        print(f"Scan complete (dry run). Found {len(results)}; the inventory was not modified.")
         return 0
 
-    updated, added = update_hosts_config(scan_results)
+    updated, added = update_hosts_config(results)
 
-    print(f"Scan complete. Found {len(scan_results)} iLO systems.")
+    print(f"Scan complete. Found {len(results)} service processors.")
     print(f"Updated {updated} existing entries and added {added} new entries.")
     return 0
+
 
 if __name__ == "__main__":
     try:

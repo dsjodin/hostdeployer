@@ -100,7 +100,18 @@ function renderSettingsContent($globalConfig) {
                                                                value="<?php echo h($globalConfig['ilo']['scan_range_end'] ?? ''); ?>" required>
                                                     </div>
                                                 </div>
-                                                
+
+                                                <div class="mb-3">
+                                                    <label for="ilo_name_suffix" class="form-label">iLO Name Suffix:</label>
+                                                    <input type="text" class="form-control" id="ilo_name_suffix" name="ilo_name_suffix"
+                                                           value="<?php echo h($globalConfig['ilo']['name_suffix'] ?? '-ilo'); ?>">
+                                                    <div class="form-text text-muted">
+                                                        Stripped from the iLO's PTR record to derive the host's name:
+                                                        <code>orbesx1001-ilo.dc.infra</code> becomes <code>orbesx1001</code>.
+                                                        Leave blank to skip deriving hostnames from DNS.
+                                                    </div>
+                                                </div>
+
                                                 <button type="submit" class="btn btn-primary">
                                                     <i class="fas fa-save me-1"></i> Save iLO Settings
                                                 </button>
@@ -714,7 +725,8 @@ function renderSettingsContent($globalConfig) {
     "admin_user": "YOUR_ILO_USERNAME",
     "admin_password": "YOUR_ILO_PASSWORD",
     "scan_range_start": "YOUR_ILO_SCAN_START_IP",
-    "scan_range_end": "YOUR_ILO_SCAN_END_IP"
+    "scan_range_end": "YOUR_ILO_SCAN_END_IP",
+    "name_suffix": "-ilo"
   },
   "webserver": {
     "ip": "YOUR_WEBSERVER_IP",
@@ -953,6 +965,7 @@ function processSettingsActions($action, $postData) {
             $globalConfig['ilo']['admin_user'] = trim((string)($postData['ilo_user'] ?? ''));
             $globalConfig['ilo']['scan_range_start'] = $scanStart;
             $globalConfig['ilo']['scan_range_end'] = $scanEnd;
+            $globalConfig['ilo']['name_suffix'] = trim((string)($postData['ilo_name_suffix'] ?? '-ilo'));
 
             // An empty password field means "keep the current password";
             // browsers never repopulate password inputs, so treating blank as

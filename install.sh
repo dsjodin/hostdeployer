@@ -371,7 +371,7 @@ PACKAGES=(
     "php${PHP_VERSION}-sqlite3" "php${PHP_VERSION}-curl"
     kea-dhcp4-server kea-ctrl-agent
     libarchive-tools          # bsdtar, for extracting ESXi ISOs
-    python3-requests python3-venv
+    python3-requests
     openssl rsync sqlite3 ca-certificates iproute2
     ipxe                      # the chainloader for the PXE branch
     tftpd-hpa                 # only the UEFI-PXE branch needs it
@@ -431,9 +431,10 @@ install -d -m 0750 -o root -g www-data "$ROOT"
 # appliance creates after installation therefore has to be excluded, or a
 # re-run destroys it:
 #
-#   venv/      built by the Python step further down. Not excluded, rsync tried
-#              to delete it on every re-run, printed a page of "cannot delete
-#              non-empty directory", and left a half-removed virtualenv behind.
+#   venv/      no longer created -- the redfish library it existed for is gone
+#              -- but older installs have one. Still excluded: unexcluded,
+#              rsync tried to delete it on every re-run, printed a page of
+#              "cannot delete non-empty directory", and left it half removed.
 #   templates/ the kickstart templates are edited and uploaded through the
 #              admin UI. Copying the shipped ones over them reverted an
 #              operator's edits, and --delete removed every template they had
@@ -545,7 +546,8 @@ else
     "ilo": {
         "admin_user": "$ILO_USER",
         "scan_range_start": "",
-        "scan_range_end": ""
+        "scan_range_end": "",
+        "name_suffix": "-ilo"
     },
     "webserver": {
         "ip": "$SERVER_IP",
@@ -685,45 +687,22 @@ fi
 
 step "Python helpers"
 
-# redfish is optional -- only secure boot management needs it -- so nothing in
-# this step may end the run. Every command that can fail sits in an if
-# condition, where set -e does not apply and a failure selects the next branch
-# instead of aborting.
+# The helper scripts need requests and nothing else. They used to need the
+# "redfish" library as well, which was the awkward dependency: not always
+# packaged, blocked from pip by PEP 668 on Debian 13, and installed here
+# through a venv fallback that once aborted the whole run before nginx and Kea
+# were configured. scripts/redfish_client.py speaks Redfish over requests
+# directly, so that entire branch is gone.
 #
-# The apt attempt used to be guarded by "apt-cache show python3-redfish", which
-# answers a different question than the one asked: apt can hold a record for a
-# name that has no installation candidate. The guard passed, the install failed,
-# and because it sat in the body of the if rather than its condition the whole
-# script stopped here -- before nginx, before Kea, leaving a machine that looked
-# installed and had neither. Just try the install and let the result decide.
-if python3 -c 'import redfish' 2>/dev/null; then
-    skip "the redfish module is already available"
-elif [ "$SKIP_PACKAGES" != 1 ] \
-     && apt-get install -y -qq --no-install-recommends python3-redfish >/dev/null 2>&1; then
-    info "installed python3-redfish from apt"
+# requests comes from apt at the top of this script. Checked rather than
+# assumed, because a failure here is silent until the first scan.
+if python3 -c 'import requests' 2>/dev/null; then
+    skip "the requests module is available"
 else
-    # Debian 13 marks the system Python externally managed (PEP 668), so a
-    # venv is the supported way in. --system-site-packages keeps
-    # python3-requests from apt visible rather than installing it twice.
-    if [ ! -x "$ROOT/venv/bin/python3" ]; then
-        python3 -m venv --system-site-packages "$ROOT/venv" 2>/dev/null \
-            || warn "could not create $ROOT/venv"
-    fi
-
-    if [ -x "$ROOT/venv/bin/pip" ] \
-       && "$ROOT/venv/bin/pip" install --quiet redfish 2>/dev/null; then
-        info "installed redfish into $ROOT/venv"
-    else
-        warn "could not install the redfish module"
-        note "Secure boot management needs the Python 'redfish' module:
-       $ROOT/venv/bin/pip install redfish
-     Everything else works without it."
-    fi
+    warn "the Python 'requests' module is missing"
+    note "The iLO scan and Secure Boot management need it:
+       apt-get install python3-requests"
 fi
-
-# The pool below puts the venv first on PATH so "python3" resolves to it when
-# PHP shells out. Harmless when the venv does not exist.
-chown -R root:www-data "$ROOT/venv" 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # PHP-FPM
@@ -762,14 +741,14 @@ INI
 
 POOL="/etc/php/${PHP_VERSION}/fpm/pool.d/www.conf"
 if [ -f "$POOL" ]; then
-    # PATH puts the venv first so the Python helpers find the redfish module.
+    # PATH keeps an older install's venv first; harmless when there is none.
     if grep -q '^env\[AUTODEPLOY_ROOT\]' "$POOL"; then
         skip "pool environment already set"
     else
         cat >> "$POOL" <<POOLEOF
 
 ; ---- hostdeployer (install.sh) ----
-; The venv first, so python3 finds the redfish module when PHP shells out.
+; An older install's venv first, if one is still there.
 env[PATH] = $ROOT/venv/bin:/usr/local/bin:/usr/bin:/bin
 env[AUTODEPLOY_ROOT] = $ROOT
 POOLEOF

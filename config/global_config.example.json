@@ -37,7 +37,8 @@
     "ilo": {
         "admin_user": "Administrator",
         "scan_range_start": "CHANGEME_ILO_RANGE_START",
-        "scan_range_end": "CHANGEME_ILO_RANGE_END"
+        "scan_range_end": "CHANGEME_ILO_RANGE_END",
+        "name_suffix": "-ilo"
     },
     "webserver": {
         "ip": "CHANGEME_SERVER_IP",

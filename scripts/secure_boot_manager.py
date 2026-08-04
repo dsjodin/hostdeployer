@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""Turn Secure Boot on or off for one host, through its service processor.
+
+The scan stages Secure Boot off across a rack; this is the single-host version
+the admin UI drives, and the one that turns it back on when a deployment
+finishes.
+
+Both go through redfish_client, which pins the BMC's self-signed certificate.
+This used to use the redfish library instead, which meant TLS policy was
+decided in two places and the session had to be logged out on every path or the
+BMC ran out of slots.
+"""
 
 import argparse
 import json
@@ -6,11 +17,8 @@ import logging
 import os
 import sys
 
-import urllib3
-
 from autodeploy_api import ApiError, AutodeployApi
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from redfish_client import FingerprintMismatch, Redfish, RedfishError
 
 # All paths derive from AUTODEPLOY_ROOT so the tree can be relocated.
 AUTODEPLOY_ROOT = os.environ.get("AUTODEPLOY_ROOT", "/srv/autodeploy")
@@ -30,15 +38,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("secure_boot_manager")
 
-try:
-    import redfish
-except ImportError:  # pragma: no cover - depends on the deployment host
-    # Import at module scope used to abort the script with a bare traceback,
-    # which surfaced in the admin UI as an unexplained non-zero exit.
-    redfish = None
-
 _global_config = None
 _api = None
+
 
 def load_global_config():
     """Load (and cache) the global configuration file."""
@@ -53,6 +55,7 @@ def load_global_config():
             sys.exit(1)
 
     return _global_config
+
 
 def api():
     """The shared API client, created on first use."""
@@ -72,142 +75,125 @@ def get_ilo_credentials(mac_address=None):
         creds.get("admin_password") or creds.get("password")
 
 
-def format_mac(mac):
-    """Format MAC address consistently"""
-    mac = mac.lower().replace(':', '').replace('-', '')
-    return ':'.join(mac[i:i+2] for i in range(0, len(mac), 2))
+def read_secure_boot(rf, system_path):
+    """Current state as 'enabled', 'disabled' or 'unknown'."""
+    try:
+        resource = rf.get(f"{system_path}/SecureBoot")
+    except RedfishError:
+        resource = None
 
-def update_secure_boot(ilo_ip, username, password, enable=True, reset=True):
-    """Enable or disable secure boot on an iLO system.
-
-    Returns True when the setting already matched or was applied.
-    """
-    if redfish is None:
-        logger.error("The python 'redfish' module is not installed (pip3 install redfish)")
-        return False
-
-    action = "Enabling" if enable else "Disabling"
-    desired = "Enabled" if enable else "Disabled"
-    redfish_obj = None
+    if resource and "SecureBootEnable" in resource:
+        return "enabled" if resource["SecureBootEnable"] else "disabled"
 
     try:
-        logger.info(f"{action} secure boot on {ilo_ip}")
+        bios = rf.get(f"{system_path}/Bios")
+    except RedfishError:
+        return "unknown"
 
-        redfish_obj = redfish.RedfishClient(
-            base_url=f"https://{ilo_ip}",
-            username=username,
-            password=password,
-            default_prefix="/redfish/v1",
-        )
-        redfish_obj.login(auth="session")
+    value = (bios or {}).get("Attributes", {}).get("SecureBoot")
+    if isinstance(value, bool):
+        return "enabled" if value else "disabled"
+    if isinstance(value, str):
+        return value.lower() if value.lower() in ("enabled", "disabled") else "unknown"
 
-        bios_data = redfish_obj.get("/Systems/1/Bios").dict
-        attributes = bios_data.get("Attributes", {})
+    return "unknown"
 
-        if "SecureBoot" not in attributes:
-            logger.error(f"Secure Boot settings not found for {ilo_ip}")
-            return False
 
-        current_status = attributes["SecureBoot"]
-        logger.info(f"Current secure boot status for {ilo_ip}: {current_status}")
+def set_secure_boot(rf, system_path, enable):
+    """Stage Secure Boot on or off.
 
-        if current_status == desired:
-            logger.info(f"Secure boot already {desired.lower()} on {ilo_ip}; no change needed")
-            return True
-
-        update_response = redfish_obj.patch(
-            "/Systems/1/Bios/Settings",
-            body={"Attributes": {"SecureBoot": desired}},
-        )
-
-        # iLO answers 200 or 202 depending on firmware revision.
-        if update_response.status not in (200, 202, 204):
-            logger.error(
-                f"Failed to update secure boot settings for {ilo_ip}: "
-                f"{update_response.status} {update_response.text}"
-            )
-            return False
-
-        if not reset:
-            logger.info(f"Secure boot change staged on {ilo_ip}; a reboot is required to apply it")
-            return True
-
-        reset_response = redfish_obj.post(
-            "/Systems/1/Actions/ComputerSystem.Reset",
-            body={"ResetType": "ForceRestart"},
-        )
-
-        if reset_response.status not in (200, 202, 204):
-            logger.error(
-                f"Secure boot setting staged but the reset of {ilo_ip} failed: "
-                f"{reset_response.status} {reset_response.text}"
-            )
-            return False
-
-        logger.info(f"Successfully staged secure boot = {desired} on {ilo_ip} and restarted the system")
+    The standard SecureBoot resource first, the vendor BIOS attribute as the
+    fallback. Applies at the next POST either way -- neither is a live change.
+    """
+    try:
+        rf.patch(f"{system_path}/SecureBoot", {"SecureBootEnable": bool(enable)})
         return True
+    except RedfishError as e:
+        logger.debug(f"{rf.address}: SecureBoot resource not writable ({e}); trying BIOS")
 
-    except Exception as e:
-        logger.error(f"Error updating secure boot for {ilo_ip}: {e}")
+    try:
+        rf.patch(
+            f"{system_path}/Bios/Settings",
+            {"Attributes": {"SecureBoot": "Enabled" if enable else "Disabled"}},
+        )
+        return True
+    except RedfishError as e:
+        logger.error(f"{rf.address}: could not stage Secure Boot: {e}")
         return False
 
-    finally:
-        # The old code leaked the Redfish session on every error path; iLO
-        # allows only a handful of concurrent sessions.
-        if redfish_obj is not None:
-            try:
-                redfish_obj.logout()
-            except Exception as e:
-                logger.debug(f"Redfish logout for {ilo_ip} failed: {e}")
 
-def find_host_by_mac(mac):
-    """Find a host in the inventory by MAC address."""
-    host = api().get_host(mac)
+def connect(host):
+    """Open a pinned connection to a host's service processor."""
+    address = host.get("ilo_ip")
+    if not address:
+        raise RedfishError("no iLO address is recorded for this host")
 
-    if host is None:
-        logger.error(f"Host with MAC {mac} not found in the inventory")
-
-    return host
-
-
-def toggle_secure_boot(mac, enable=True, reset=True):
-    """Toggle secure boot for a host with the given MAC address"""
-    global_config = load_global_config()
-    host = find_host_by_mac(mac)
-
-    if not host:
-        logger.error(f"Host with MAC {mac} not found")
-        return False
-
-    if not host.get("ilo_ip"):
-        logger.error(f"Host with MAC {mac} does not have an iLO IP configured")
-        return False
-
-    # Per-host overrides take priority over the global iLO account.
+    mac = host.get("mac_address")
     username, password = get_ilo_credentials(mac)
+
+    global_config = load_global_config()
     username = username or global_config.get("ilo", {}).get("admin_user")
     password = password or global_config.get("ilo", {}).get("admin_password")
 
     if not username or not password:
-        logger.error("iLO credentials not found in configuration")
+        raise RedfishError("no iLO credentials are configured")
+
+    return Redfish(
+        address, username, password,
+        fingerprint=host.get("ilo_cert_sha256") or None,
+    )
+
+
+def toggle_secure_boot(mac, enable=True, reset=True):
+    """Set Secure Boot for the host with this MAC, optionally rebooting it."""
+    host = api().get_host(mac)
+
+    if host is None:
+        logger.error(f"Host with MAC {mac} not found in the inventory")
         return False
 
-    result = update_secure_boot(host["ilo_ip"], username, password, enable, reset=reset)
+    try:
+        rf = connect(host)
+        system_path = rf.system_path()
 
-    if result:
-        status = "enabled" if enable else "disabled"
-        api().set_secure_boot_status(mac, status)
-        logger.info(f"Updated secure boot status for host with MAC {mac} to {status}")
+        desired = "enabled" if enable else "disabled"
+        current = read_secure_boot(rf, system_path)
 
-    return result
+        if current == desired:
+            logger.info(f"{rf.address}: Secure Boot already {desired}; no change needed")
+            api().set_secure_boot_status(mac, desired)
+            return True
+
+        if not set_secure_boot(rf, system_path, enable):
+            return False
+
+        if reset:
+            rf.post(
+                f"{system_path}/Actions/ComputerSystem.Reset",
+                {"ResetType": "ForceRestart"},
+            )
+            logger.info(f"{rf.address}: staged Secure Boot {desired} and restarted")
+        else:
+            logger.info(f"{rf.address}: staged Secure Boot {desired}; a reboot will apply it")
+
+        api().set_secure_boot_status(mac, desired)
+        return True
+
+    except FingerprintMismatch as e:
+        logger.error(str(e))
+        return False
+    except RedfishError as e:
+        logger.error(f"Secure Boot change for {mac} failed: {e}")
+        return False
+
 
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description="Manage secure boot settings for HPE servers")
+    parser = argparse.ArgumentParser(description="Manage Secure Boot for one host")
     parser.add_argument("--mac", required=True, help="MAC address of the target server")
-    parser.add_argument("--action", required=True, choices=["enable", "disable"], help="Action to perform")
+    parser.add_argument("--action", required=True, choices=["enable", "disable"],
+                        help="Action to perform")
     parser.add_argument("--no-reset", action="store_true",
-                        help="Stage the BIOS change without rebooting the server")
+                        help="Stage the change without rebooting the server")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
@@ -215,14 +201,13 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
-    result = toggle_secure_boot(args.mac, args.action == "enable", reset=not args.no_reset)
-    
-    if result:
-        print(f"Successfully {args.action}d secure boot for host with MAC {args.mac}")
+    if toggle_secure_boot(args.mac, args.action == "enable", reset=not args.no_reset):
+        print(f"Successfully {args.action}d Secure Boot for host with MAC {args.mac}")
         return 0
-    else:
-        print(f"Failed to {args.action} secure boot for host with MAC {args.mac}")
-        return 1
+
+    print(f"Failed to {args.action} Secure Boot for host with MAC {args.mac}")
+    return 1
+
 
 if __name__ == "__main__":
     try:

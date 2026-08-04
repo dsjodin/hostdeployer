@@ -47,7 +47,8 @@ if (!function_exists('storeHostColumns')) {
             'bios_version', 'management_ip', 'management_netmask', 'management_gateway',
             'vmotion_ip', 'vmotion_netmask', 'datastore_name', 'progress', 'progress_text',
             'registered_time', 'last_seen', 'approved_time', 'deployment_started',
-            'deployment_time', 'reinstall_requested',
+            'deployment_time', 'reinstall_requested', 'ilo_cert_sha256',
+            'secure_boot_off_since',
         ];
     }
 }
@@ -706,10 +707,18 @@ if (!function_exists('storeMergeDiscoveredHosts')) {
                 }
 
                 foreach (['ilo_ip', 'model', 'manufacturer', 'bios_version',
-                          'secure_boot_status', 'additional_macs'] as $field) {
+                          'secure_boot_status', 'additional_macs',
+                          'ilo_cert_sha256'] as $field) {
                     if (!empty($result[$field])) {
                         $hosts[$match][$field] = $result[$field];
                     }
+                }
+
+                // The scan derives a hostname from the iLO's PTR record, but
+                // only fills a gap with it. An operator who has named a host
+                // owns that name: re-running discovery must not rewrite it.
+                if (empty($hosts[$match]['hostname']) && !empty($result['hostname'])) {
+                    $hosts[$match]['hostname'] = $result['hostname'];
                 }
 
                 if (empty($hosts[$match]['serial_number']) && $serial !== '' && $serial !== 'Unknown') {
