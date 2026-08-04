@@ -375,6 +375,110 @@ if (!function_exists('storeFindHost')) {
     }
 }
 
+if (!function_exists('storeFindHostBySerial')) {
+    /**
+     * Find a host by its chassis serial number.
+     *
+     * The join between discovery and boot. The iLO scan knows a machine by its
+     * serial and by whichever MACs the BMC chose to report; a booting machine
+     * announces the MAC of the port it actually booted from, which is not
+     * necessarily one of those -- an add-in NIC, a re-cabled port, a card the
+     * BMC does not enumerate. The serial is the same in both worlds.
+     *
+     * @param string $serial Serial as reported by SMBIOS or the BMC
+     * @return array<string, mixed>|null
+     */
+    function storeFindHostBySerial($serial) {
+        // Printable only: this arrives from a booting machine's SMBIOS, which
+        // is not a trustworthy source of well-formed strings.
+        $serial = trim(preg_replace('/[^\x20-\x7E]/', '', (string)$serial));
+
+        // Real hardware ships with these. Matching on them would collapse
+        // every unconfigured machine in the estate onto one record.
+        $placeholders = ['', 'unknown', 'none', 'not specified', 'to be filled by o.e.m.',
+                         'default string', 'system serial number', '0123456789'];
+
+        if (in_array(strtolower($serial), $placeholders, true)) {
+            return null;
+        }
+
+        try {
+            $pdo = db();
+
+            $statement = $pdo->prepare('SELECT * FROM hosts WHERE serial_number = ?');
+            $statement->execute([$serial]);
+            $rows = $statement->fetchAll();
+
+            // Two hosts with one serial means the inventory is already wrong.
+            // Guessing which is meant would install the wrong machine.
+            if (count($rows) !== 1) {
+                if (count($rows) > 1) {
+                    logMessage("Serial '$serial' matches " . count($rows) . ' hosts; refusing to guess', 'ERROR');
+                }
+                return null;
+            }
+
+            $macs = $pdo->prepare('SELECT mac FROM host_macs WHERE host_mac = ? ORDER BY mac');
+            $macs->execute([$rows[0]['mac']]);
+
+            return storeRowToHost($rows[0], $macs->fetchAll(PDO::FETCH_COLUMN));
+        } catch (Throwable $e) {
+            logMessage('Could not look up host by serial: ' . $e->getMessage(), 'ERROR');
+            return null;
+        }
+    }
+}
+
+if (!function_exists('storeAttachMac')) {
+    /**
+     * Record an additional MAC for a host that is already known.
+     *
+     * Called when a machine is recognised by serial on a port nothing had seen
+     * before, so the next boot resolves by MAC without the serial detour.
+     *
+     * Refuses when the MAC belongs to a different host: that is two machines
+     * reporting one serial, or a MAC that moved between chassis, and silently
+     * repointing it would send an approved host's kickstart to the wrong
+     * hardware.
+     *
+     * @param string $primaryMac The host's primary MAC
+     * @param string $newMac     MAC to attach
+     * @return bool True when attached or already present
+     */
+    function storeAttachMac($primaryMac, $newMac) {
+        $primaryMac = formatMac($primaryMac);
+        $newMac = formatMac($newMac);
+
+        if ($primaryMac === '' || $newMac === '' || $primaryMac === $newMac) {
+            return false;
+        }
+
+        try {
+            return dbTransaction(static function (PDO $pdo) use ($primaryMac, $newMac) {
+                $owner = storeResolveMac($pdo, $newMac);
+
+                if ($owner === $primaryMac) {
+                    return true;
+                }
+
+                if ($owner !== '') {
+                    logMessage("MAC $newMac already belongs to $owner; not attaching to $primaryMac", 'WARNING');
+                    return false;
+                }
+
+                $pdo->prepare('INSERT OR IGNORE INTO host_macs (mac, host_mac) VALUES (?, ?)')
+                    ->execute([$newMac, $primaryMac]);
+
+                logMessage("Attached MAC $newMac to host $primaryMac");
+                return true;
+            });
+        } catch (Throwable $e) {
+            logMessage('Could not attach MAC: ' . $e->getMessage(), 'ERROR');
+            return false;
+        }
+    }
+}
+
 if (!function_exists('storeMutateHosts')) {
     /**
      * Run a mutation over the whole host list inside one transaction.

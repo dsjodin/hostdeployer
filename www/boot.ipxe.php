@@ -93,6 +93,35 @@ $autoRegistrationEnabled = !empty($autoRegistration['enabled']);
 $host = storeFindHost($mac);
 
 // ---------------------------------------------------------------------------
+// Fall back to the serial number
+// ---------------------------------------------------------------------------
+//
+// ipxe/boot.ipxe sends ${smbios/serial} alongside the MAC, and until now
+// nothing looked at it. It is the join between the two halves of the system:
+// the iLO scan registers a machine by serial and by whichever MACs the BMC
+// chose to enumerate, and the machine then boots from whichever port its boot
+// order picked -- an add-in card, a re-cabled port, a NIC the BMC does not
+// list. Those two sets do not always overlap, and when they do not, a host
+// that was discovered, named and approved arrives here looking brand new.
+//
+// Matching on the serial recognises it, and the port it booted from is
+// recorded so the next boot resolves by MAC without this detour.
+
+$serial = (string)($_GET['serial'] ?? '');
+
+if ($host === null && $serial !== '') {
+    $host = storeFindHostBySerial($serial);
+
+    if ($host !== null) {
+        ipxeLog("Matched $mac to {$host['hostname']} by serial $serial");
+
+        // No conflict is possible here: nothing owns this MAC, or the lookup
+        // above would have found it.
+        storeAttachMac($host['mac_address'] ?? '', $mac);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Auto-registration of unknown hosts
 // ---------------------------------------------------------------------------
 

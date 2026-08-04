@@ -376,4 +376,94 @@ final class StoreTest extends TestCase
         self::assertSame('10.0.1.5', $host['ilo_ip']);
         self::assertSame('ProLiant DL380 Gen10', $host['model']);
     }
+
+    // -- serial matching ----------------------------------------------------
+    //
+    // The join between the iLO scan, which knows a machine by its serial, and
+    // the boot, which knows the MAC of the port that happened to boot.
+
+    public function testFindsAHostByItsSerialNumber(): void
+    {
+        self::assertTrue(storeAddHost([
+            'mac_address'   => '00:0c:29:91:cf:eb',
+            'hostname'      => 'orbesx1001',
+            'serial_number' => 'CZ3xxxxxxx',
+        ]));
+
+        $host = storeFindHostBySerial('CZ3xxxxxxx');
+        self::assertNotNull($host);
+        self::assertSame('orbesx1001', $host['hostname']);
+    }
+
+    public function testIgnoresPlaceholderSerialNumbers(): void
+    {
+        // Real hardware ships with these. Matching on them would collapse
+        // every unconfigured machine in the estate onto one record.
+        foreach (['', 'Unknown', 'None', 'To Be Filled By O.E.M.', 'Default string'] as $placeholder) {
+            db()->exec('DELETE FROM hosts');
+            self::assertTrue(storeAddHost([
+                'mac_address'   => '00:0c:29:91:cf:eb',
+                'serial_number' => $placeholder,
+            ]));
+
+            self::assertNull(
+                storeFindHostBySerial($placeholder),
+                "'$placeholder' must not match a host"
+            );
+        }
+    }
+
+    public function testRefusesToGuessWhenTwoHostsShareASerial(): void
+    {
+        // An inventory in this state is already wrong. Picking one would
+        // install the wrong machine.
+        self::assertTrue(storeAddHost([
+            'mac_address'   => '00:0c:29:91:cf:eb',
+            'serial_number' => 'CZ3xxxxxxx',
+        ]));
+        self::assertTrue(storeAddHost([
+            'mac_address'   => '00:0c:29:91:cf:ec',
+            'serial_number' => 'CZ3xxxxxxx',
+        ]));
+
+        self::assertNull(storeFindHostBySerial('CZ3xxxxxxx'));
+    }
+
+    public function testAttachesTheBootingMacToTheMatchedHost(): void
+    {
+        self::assertTrue(storeAddHost([
+            'mac_address'   => '00:0c:29:91:cf:eb',
+            'hostname'      => 'orbesx1001',
+            'serial_number' => 'CZ3xxxxxxx',
+        ]));
+
+        // The port the machine actually booted from, which the BMC never
+        // enumerated.
+        self::assertTrue(storeAttachMac('00:0c:29:91:cf:eb', 'b0:5a:da:11:22:33'));
+
+        $host = storeFindHost('b0:5a:da:11:22:33');
+        self::assertNotNull($host);
+        self::assertSame('orbesx1001', $host['hostname']);
+    }
+
+    public function testDoesNotStealAMacThatBelongsToAnotherHost(): void
+    {
+        self::assertTrue(storeAddHost(['mac_address' => '00:0c:29:91:cf:eb', 'hostname' => 'one']));
+        self::assertTrue(storeAddHost(['mac_address' => '00:0c:29:91:cf:ec', 'hostname' => 'two']));
+
+        self::assertFalse(storeAttachMac('00:0c:29:91:cf:eb', '00:0c:29:91:cf:ec'));
+
+        // Still resolves to its own record.
+        $host = storeFindHost('00:0c:29:91:cf:ec');
+        self::assertNotNull($host);
+        self::assertSame('two', $host['hostname']);
+    }
+
+    public function testAttachingAMacTwiceIsNotAnError(): void
+    {
+        self::assertTrue(storeAddHost(['mac_address' => '00:0c:29:91:cf:eb', 'hostname' => 'one']));
+
+        self::assertTrue(storeAttachMac('00:0c:29:91:cf:eb', 'b0:5a:da:11:22:33'));
+        self::assertTrue(storeAttachMac('00:0c:29:91:cf:eb', 'b0:5a:da:11:22:33'));
+    }
 }
