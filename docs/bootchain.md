@@ -1,10 +1,11 @@
 # Bootkedjan
 
-Från strömpåslag till färdig ESXi-host.
+Från strömpåslag till färdig ESXi-host. Servern finns redan i inventariet vid
+det här laget — den kom in via iLO-scanen, se "Innan hosten bootar" nedan.
 
 ```
  ┌──────────┐
- │  Server  │  UEFI, nätverksboot
+ │  Server  │  UEFI, nätverksboot (Secure Boot avstängt av iLO-scanen)
  └────┬─────┘
       │ 1. DHCP DISCOVER  (option 60 = HTTPClient / option 93 = arch)
       ▼
@@ -34,6 +35,8 @@ Från strömpåslag till färdig ESXi-host.
  │  www/boot.ipxe.php                                             │
  │                                                                │
  │   slår upp MAC i inventariet (även sekundära MAC-adresser)    │
+ │   okänd MAC → matcha på ${smbios/serial} från iLO-scanen       │
+ │               och skriv in porten som faktiskt bootade         │
  │                                                                │
  │   okänd MAC + autoreg på  → registrera som pending → vänta     │
  │   okänd MAC + autoreg av  → vänta, max 5 försök                │
@@ -135,6 +138,44 @@ kopia.
 för hela klassen, så en HTTP Boot-firmware kan inte skicka sin MAC. Servern
 identifierar då klienten på dess adress, samma fallback som
 `generate_kickstart.php` redan använder. iPXE-vägen skickar alltid `?mac=`.
+
+## Innan hosten bootar: upptäckt via iLO
+
+En server kommer in i inventariet genom sitt servicekort, inte genom DHCP.
+`scripts/ilo_scanner.py` sveper iLO-nätet och för varje kort som svarar:
+
+```
+  ping  →  PTR-uppslag  →  Redfish
+                             ├─ SerialNumber
+                             ├─ EthernetInterfaces → MAC-adresser
+                             ├─ SecureBoot-status
+                             └─ stager Secure Boot av
+```
+
+PTR-namnet är identiteten, inte adressen: Infoblox äger iLO-nätet och ett kort
+kan komma tillbaka på en annan adress. Namnet bär dessutom hostens namn —
+`orbesx1001-ilo.dc.infra` tillhör `orbesx1001` — så suffixet (`ilo.name_suffix`,
+default `-ilo`) klipps bort och resten blir hostnamnet.
+
+Certifikatet är självsignerat. `scripts/redfish_client.py` spelar in dess
+SHA-256 vid första kontakten och pinnar det därefter; ett ändrat avtryck avvisas
+i stället för att skrivas om tyst.
+
+Secure Boot stagas av eftersom `ipxe.efi` är osignerad och servrar levereras med
+Secure Boot på. **Ingen omstart** görs av en scan, och en host som inventariet
+redan vet är `deployed` lämnas orörd — iLO-nätet bär produktion.
+
+### Serienumret är kopplingen
+
+Scanen känner maskinen på serienummer och på de MAC-adresser BMC:n råkar
+räkna upp. Maskinen bootar sedan från den port dess bootordning valde, vilket
+inte behöver vara någon av dem. `boot.ipxe.php` matchar därför på serienummer
+när MAC:en är okänd, och skriver in porten den faktiskt bootade från så nästa
+boot går direkt.
+
+Platshållarserienummer (`Unknown`, `To Be Filled By O.E.M.`) matchar ingenting,
+och ett serienummer som två hostar delar matchar heller ingenting — det
+inventariet är redan fel, och att gissa installerar fel maskin.
 
 ## Statusmaskin
 

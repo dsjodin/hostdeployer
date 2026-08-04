@@ -1,20 +1,33 @@
-# Nätverkssegmentering — admin-VLAN och provisioneringsVLAN
+# Nätverkssegmentering — tre nät, tre NIC
 
-Den typiska produktionsuppställningen: admin-UI:t på ett förvaltnings-VLAN som
-bara driftpersonal når, och DHCP:n på ESXi-hostarnas management-VLAN, eftersom
-DHCP är broadcast och måste ligga i samma L2-domän som de maskiner som ska
-installeras. En vNIC på en vSphere-portgroup som bär flera VLAN.
+Deployern sitter på **tre** nät, och att hålla isär dem är hela poängen:
 
-Det här dokumentet beskriver vad som måste vara nåbart var, vad i koden som inte
-stödjer uppdelningen idag, och hur det ska ändras.
+| Nät | NIC | Riktning | Vad |
+|---|---|---|---|
+| **admin** | 1 | inkommande | Admin-UI och REST-API. Lyssnar här och ingen annanstans. |
+| **iLO/iDRAC** | 2 | utgående | Redfish. Ingenting lyssnar; scannern ringer ut. |
+| **ESXi mgmt/deploy** | 3 | inkommande | DHCP, bootkedjan, ESXi-media, kickstart. |
+
+Admin-UI:t når varken iLO-nätet eller ESXi-mgmt-nätet, och tvärtom. Skälet är
+konkret: dashboarden håller iLO-administratörskontot och ESXi-root-lösenordet
+för hela beståndet, och en maskin på deploy-nätet kör per definition kod som
+ingen granskat än — en ESXi-image, en kickstart, det installern hämtar.
+
+DHCP är broadcast och måste ligga i samma L2-domän som maskinerna som ska
+installeras, så NIC 3 är den som verkligen binds. NIC 2 behöver bara en route.
+
+Det här dokumentet beskriver vad som måste vara nåbart var.
 
 ---
 
 ## 1. Vilka endpoints hostarna behöver
 
-Bootkedjan är redan separerad i `nginx.conf`: port 80 innehåller exakt det
-firmware behöver, port 443 innehåller admin-UI:t och REST-API:t. Uppdelningen är
-gjord — det som saknas är att de två lyssnar på *olika adresser*.
+Bootkedjan är separerad i `nginx.conf`: port 80 på deploy-adressen innehåller
+exakt det firmware behöver, port 443 på admin-adressen innehåller admin-UI:t och
+REST-API:t. `install.sh` substituerar `DEPLOY_IP` och `ADMIN_IP` när sajten
+skrivs, och avbryter om en platshållare blir kvar — en lyssnare som föll
+tillbaka till 0.0.0.0 är just det som den här uppdelningen finns för att
+förhindra, och den hade sett ut att fungera.
 
 ### Måste finnas på provisionerings-/mgmt-VLAN:et
 
@@ -51,10 +64,11 @@ Port 80, endpoint för endpoint (`nginx.conf:41-118`):
 | iLO/OOB-nätet | 443/tcp | `scripts/ilo_scanner.py`, `scripts/secure_boot_manager.py` (Redfish) |
 | SMTP | 25/tcp | valfri notifiering vid autoregistrering (`boot.ipxe.php:139`) |
 
-> **Notera:** Redfish-anropen går med `verify=False`
-> (`scripts/ilo_scanner.py`, `secure_boot_manager.py`). Trafiken bär iLO-lösenordet
-> och autentiseras inte mot något certifikat — den vägen ska inte routas över
-> något som inte är lika betrott som provisioneringsnätet självt.
+> **Notera:** BMC-certifikaten är självsignerade, så det finns ingen kedja att
+> validera. `scripts/redfish_client.py` spelar in SHA-256 vid första kontakten
+> och pinnar det därefter (`hosts.ilo_cert_sha256`); ett ändrat avtryck avvisas
+> i stället för att skrivas om. Trafiken bär iLO-administratörslösenordet, så
+> den vägen ska ändå inte routas över något mindre betrott än näten här.
 
 ### Den detalj som är lätt att missa
 
@@ -71,45 +85,45 @@ lyckades. Samma sak gäller `progress.php`-beaconen i `%firstboot`.
 
 ---
 
-## 2. Vad koden inte stödjer idag
+## 2. Konfiguration
 
-### 2.1 nginx lyssnar på alla adresser (`nginx.conf:25-26, 142-143`)
+### 2.1 Adresserna sätts i en fil
 
-```nginx
-listen 80 default_server;
-listen [::]:80 default_server;
-...
-listen 443 ssl;
-listen [::]:443 ssl;
+```bash
+cp config/install.example.conf install.conf
+chmod 600 install.conf
+sudo ./install.sh --config install.conf
 ```
 
-Utan adress betyder det **alla** interface. Konsekvensen är att admin-UI:t och
-REST-API:t syns på provisioneringsnätet — där oautentiserade ESXi-installationer,
-främmande hårdvara och allt annat som råkar bli inkopplat sitter. Loginsidan och
-`/api/v1/` ska inte finnas där.
+`ADMIN_IP` är adressen dashboarden binds till, `SERVER_IP` deploy-adressen som
+Kea annonserar som `next-server` och som varje URL i bootkedjan bygger på, och
+`BMC_INTERFACE` interfacet mot iLO-nätet. Utelämnas `ADMIN_IP` faller den
+tillbaka till `SERVER_IP` — det fungerar i ett labb, och `install.sh` säger då
+uttryckligen att admin-gränssnittet ligger på deploy-nätet.
 
-### 2.2 install.sh känner bara till ett interface och en adress
+Filen läses rad för rad in i en fast lista av namn, aldrig med `source`. Den
+namnger adresser och interface och ska inte också vara en väg att köra
+kommandon som root.
 
-`--interface` och `--server-ip` används till tre olika saker samtidigt:
+Lägger du in `ILO_PASSWORD` eller `ESXI_PASSWORD` måste filen vara `0600`;
+`install.sh` varnar annars. Lämnas de tomma frågar installern i stället, och då
+hamnar de aldrig på disk.
 
-* Keas `interfaces-config` och `next-server` (`deploy/kea-config.sh`)
-* `webserver.ip` / `webserver.url` i `global_config.json` — som blir `prefix=`,
-  `ks=` och `{{SERVER_URL}}` i varje kickstart
-* certifikatets `subjectAltName` och sammanfattningens dashboard-URL
+### 2.2 Vad som binds var
 
-I en delad uppställning ska de två första vara **provisioneringsadressen** och den
-sista **adminadressen**. Det finns inget sätt att uttrycka det.
+| Tjänst | Bunden till | Var det sätts |
+|---|---|---|
+| nginx :80 | `SERVER_IP` | `nginx.conf`, platshållare `DEPLOY_IP` |
+| nginx :443 | `ADMIN_IP` | `nginx.conf`, platshållare `ADMIN_IP` |
+| nginx :80 (redirect till https) | `ADMIN_IP` | egen server-block |
+| Kea DHCPv4 | `INTERFACE` | `interfaces-config` |
+| tftpd-hpa | `SERVER_IP:69` | `/etc/default/tftpd-hpa` |
+| Redfish (utgående) | route via `BMC_INTERFACE` | inget binds |
 
-Validering på `install.sh:266-275` kräver dessutom att `--server-ip` ligger i
-DHCP-subnätet — rätt för provisioneringsbenet, men det gör att adminadressen
-måste bli en egen variabel.
+Certifikatets `subjectAltName` namnger `ADMIN_IP`, eftersom det är där 443
+svarar.
 
-### 2.3 tftpd-hpa binder alla adresser
-
-`install.sh:708-713` skriver bara `TFTP_DIRECTORY`. `TFTP_ADDRESS` lämnas som
-Debians `:69`, alltså alla interface.
-
-### 2.4 Kea startar innan VLAN-subinterfacet finns
+### 2.3 Kea startar innan VLAN-subinterfacet finns
 
 `interfaces-config` namnger interfacet explicit, vilket är rätt. Men ett
 subinterface (`ens192.20`) reses av nätverkskonfigurationen, och Kea vägrar
@@ -118,65 +132,14 @@ starta om det inte finns när daemonen startar. Utan ordning mot
 
 ---
 
-## 3. Föreslagen ändring i nginx.conf
+## 3. Två saker som biter när lyssnarna har adresser
 
-Två lyssnare på två adresser, plus `allow`/`deny` som andra lager. Adresserna
-mallas in av install.sh på samma sätt som FPM-socketen redan mallas in.
-
-```nginx
-# ---------------------------------------------------------------------------
-# Provisioneringsnätet: bootkedjan. Ingen autentisering — klienterna är
-# firmware utan credentials — så den här lyssnaren får inte finnas någon
-# annanstans än på det nät som är avsett för att installera maskiner.
-# ---------------------------------------------------------------------------
-server {
-    listen @PROVISIONING_IP@:80 default_server;
-    server_name _;
-
-    # ... befintliga location-block för /ipxe/, /esxi/, /boot.ipxe.php,
-    #     /ks.cfg, /mboot.efi, /boot.cfg, /boot.cfg.php, /progress.php,
-    #     /deployment_complete.php, /admin/deployment_complete.php ...
-
-    # Admin-UI:t finns inte på det här nätet. Ingen redirect till HTTPS:
-    # en redirect avslöjar var det ligger.
-    location / { return 404; }
-}
-
-# ---------------------------------------------------------------------------
-# Adminnätet: dashboard och REST-API. Bara TLS.
-# ---------------------------------------------------------------------------
-server {
-    listen @ADMIN_IP@:443 ssl default_server;
-    http2 on;
-    server_name _;
-
-    # Andra lagret. Bindningen ovan är det som gör att paketen aldrig kommer
-    # in; det här är det som gäller om någon tar bort den, eller om trafiken
-    # routas hit från ett annat nät.
-    allow @ADMIN_CIDR@;
-    allow 127.0.0.1;
-    deny  all;
-
-    # ... befintlig konfiguration ...
-}
-
-# Bara för att skicka operatörer som skriver http:// vidare till TLS.
-server {
-    listen @ADMIN_IP@:80;
-    server_name _;
-    location / { return 301 https://$host$request_uri; }
-}
-```
-
-Punkter värda att veta:
-
-* **`default_server` per adress.** `default_server` är per lyssnaradress, inte
-  globalt, så båda blocken kan bära flaggan. Bootkedjan behöver den: firmware som
-  hämtar `/mboot.efi` skickar ingen användbar Host-header.
-* **nginx startar inte om adressen saknas.** Med en explicit adress i `listen`
-  failar starten om VLAN-interfacet ännu inte är uppe. Antingen
-  `sysctl net.ipv4.ip_nonlocal_bind=1`, eller en drop-in som ordnar nginx efter
-  `network-online.target`:
+* **`default_server` är per lyssnaradress, inte globalt.** Båda blocken kan
+  alltså bära flaggan. Bootkedjan behöver den: firmware som hämtar en bootfil
+  skickar ingen användbar Host-header.
+* **nginx startar inte om adressen inte finns.** Med explicit adress i `listen`
+  failar starten när VLAN-interfacet ännu inte är uppe vid boot. Antingen
+  `sysctl net.ipv4.ip_nonlocal_bind=1`, eller en drop-in:
 
   ```ini
   # /etc/systemd/system/nginx.service.d/10-wait-for-network.conf
@@ -184,52 +147,20 @@ Punkter värda att veta:
   After=network-online.target
   Wants=network-online.target
   ```
-* **Vill du inte binda per adress** — till exempel för att adresserna ändras — så
-  räcker `allow`/`deny` i 443-blocket ensamt som ett meningsfullt lyft mot idag.
-  Kombinationen är bättre.
-* **`Strict-Transport-Security`** ska bara sättas på adminlyssnaren, vilket den
-  redan gör. Skulle den hamna på port 80-svaret hade den brutit bootkedjan för
-  klienter som tar hänsyn till den.
 
----
+Ett kvarvarande lager värt att lägga till: `allow`/`deny` på adminblocket.
+Bindningen är det som gör att paketen aldrig kommer in; `allow` är det som
+gäller om någon tar bort bindningen, eller om trafik routas dit från ett annat
+nät.
 
-## 4. Föreslagen ändring i install.sh
+## 4. `webserver.url` är deploy-adressen
 
-Nya flaggor, med bakåtkompatibel default (ett ben = som idag):
-
-```
---interface NAME          provisioneringsinterface: Kea och port 80
---server-ip ADDR          adress på provisioneringsnätet
---admin-interface NAME    interface för admin-UI:t          (default: --interface)
---admin-ip ADDR           adress admin-UI:t binds till      (default: --server-ip)
---admin-allow CIDR        nät som får nå /admin och /api    (default: adminadressens /24)
-```
-
-och i nginx-steget (`install.sh:657-658`), där idag bara FPM-socketen mallas in:
-
-```bash
-sed -e "s#server unix:/var/run/php/php-fpm.sock;#server unix:${FPM_SOCKET};#" \
-    -e "s#@PROVISIONING_IP@#${SERVER_IP}#g" \
-    -e "s#@ADMIN_IP@#${ADMIN_IP}#g" \
-    -e "s#@ADMIN_CIDR@#${ADMIN_ALLOW}#g" \
-    "$ROOT/nginx.conf" > /etc/nginx/sites-available/autodeploy
-```
-
-Övrigt i samma steg:
-
-* Certifikatets SAN ska innehålla **adminadressen** (`install.sh:640` sätter
-  `IP:$SERVER_IP` — fel adress i en delad uppställning).
-* Slutsammanfattningen ska visa `https://$ADMIN_IP/admin/` och
-  `http://$SERVER_IP/` för bootkedjan.
-* `TFTP_ADDRESS` ska bindas:
-
-  ```bash
-  sed -i "s#^TFTP_ADDRESS=.*#TFTP_ADDRESS=\"${SERVER_IP}:69\"#" /etc/default/tftpd-hpa
-  ```
-* `webserver.ip` och `webserver.url` i `global_config.json` ska fortsätta vara
-  `$SERVER_IP`, alltså provisioneringsadressen. Det är redan korrekt — men det är
-  värt en kommentar i filen, för instinkten i en delad uppställning är att fylla i
-  adminadressen där, och då slutar varje host att kunna hämta sin kickstart.
+Värt att veta innan någon "rättar" den: `webserver.ip` och `webserver.url` i
+`global_config.json` ska vara **deploy-adressen**, inte adminadressen. De blir
+`prefix=`, `ks=` och `{{SERVER_URL}}` i varje kickstart, och en host som ska
+hämta sin kickstart sitter på deploy-nätet. Instinkten i en uppdelad
+uppställning är att fylla i adminadressen där, och då slutar varje host att
+kunna installeras.
 
 ---
 
@@ -466,9 +397,10 @@ provisioneringsbenet och port 67/69 aldrig på adminbenet.
 
 | Prio | Var | Ändring |
 |---|---|---|
-| P1 | `nginx.conf` | dela lyssnarna per adress; `allow`/`deny` på adminblocket; platshållare som install.sh mallar in |
-| P1 | `install.sh` | `--admin-interface`, `--admin-ip`, `--admin-allow`; mallning av nginx-siten; SAN på adminadressen |
-| P1 | `install.sh` | binda `TFTP_ADDRESS` till provisioneringsadressen |
+| ~~P1~~ | `nginx.conf` | ~~dela lyssnarna per adress~~ — gjort; `DEPLOY_IP`/`ADMIN_IP` mallas in av install.sh |
+| ~~P1~~ | `install.sh` | ~~`--admin-ip`, mallning av nginx-siten, SAN på adminadressen~~ — gjort, plus `--config` |
+| ~~P1~~ | `install.sh` | ~~binda `TFTP_ADDRESS`~~ — gjort |
+| P1 | `nginx.conf` | `allow`/`deny` på adminblocket som andra lager bakom bindningen |
 | P2 | `install.sh` | systemd drop-ins: nginx och Kea efter `network-online.target` |
 | P2 | `deploy/kea-config.sh` | `--relay ADDR` för uppställningar utan L2-närvaro |
 | P2 | `lib/kea.php:277` | bevara `relay` (och `client-class`) när `subnet4[0]` byggs om, som `id` och `reservations` redan bevaras |

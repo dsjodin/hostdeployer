@@ -1,8 +1,13 @@
 # hostdeployer
 
-Automatiserad ESXi-provisionering: DHCP → UEFI HTTP Boot eller iPXE → mboot →
-kickstart, med ett webbgränssnitt och ett REST-API för att godkänna och
-konfigurera servrar.
+Automatiserad ESXi-provisionering. Servrar hittas på iLO/iDRAC-nätet över
+Redfish, godkänns i webbgränssnittet, och installeras sedan genom
+DHCP → iPXE → mboot → kickstart. Webbgränssnitt och REST-API för godkännande
+och konfiguration.
+
+Deployern sitter på tre nät — admin, iLO/iDRAC och ESXi mgmt/deploy — och
+admin-gränssnittet svarar bara på det första. Se
+[`docs/network-segmentation.md`](docs/network-segmentation.md).
 
 ## Dokumentation
 

@@ -3,6 +3,12 @@
 config/global_config.json
 config/hosts.json
 
+# A filled-in installer config. May hold the iLO account and the root password
+# every host is installed with, so it is ignored everywhere rather than only in
+# the one directory the example happens to live in.
+install.conf
+*.install.conf
+
 # The host inventory database (and its WAL sidecars)
 config/autodeploy.db
 config/autodeploy.db-wal

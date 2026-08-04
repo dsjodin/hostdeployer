@@ -79,8 +79,11 @@ trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 # Arguments
 # --------------------------------------------------------------------------
 
+CONFIG_FILE=""
 SERVER_IP=""
 INTERFACE=""
+ADMIN_IP=""
+BMC_INTERFACE=""
 DHCP_START=""
 DHCP_END=""
 NETMASK="255.255.255.0"
@@ -95,13 +98,24 @@ ESXI_PASSWORD=""
 ASSUME_YES=0
 SKIP_PACKAGES=0
 
+# Which values came from the command line. A config file fills in the rest, so
+# it needs to know the difference between "not given" and "given, and happens
+# to equal the default".
+declare -A SET_BY_FLAG=()
+
 usage() {
     sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     cat <<'USAGE'
 
 Options:
-  --server-ip ADDR        This server's address on the provisioning network
-  --interface NAME        Interface Kea listens on
+  --config FILE           Read the settings below from a file (see
+                          config/install.example.conf). Command-line
+                          options win over the file.
+  --server-ip ADDR        This server's address on the deploy network
+  --interface NAME        Interface Kea listens on (deploy network)
+  --admin-ip ADDR         This server's address on the admin network; the
+                          dashboard listens here and nowhere else
+  --bmc-interface NAME    Interface facing the iLO/iDRAC network
   --dhcp-range A-B        Address pool handed to booting servers
   --netmask MASK          Provisioning network mask (default 255.255.255.0)
   --gateway ADDR          Gateway offered to booting servers
@@ -120,24 +134,97 @@ USAGE
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --server-ip)       SERVER_IP="${2:-}"; shift 2 ;;
-        --interface)       INTERFACE="${2:-}"; shift 2 ;;
-        --dhcp-range)      DHCP_START="${2%%-*}"; DHCP_END="${2##*-}"; shift 2 ;;
-        --netmask)         NETMASK="${2:-}"; shift 2 ;;
-        --gateway)         GATEWAY="${2:-}"; shift 2 ;;
-        --dns)             DNS="${2:-}"; shift 2 ;;
-        --ntp)             NTP="${2:-}"; shift 2 ;;
-        --domain)          DOMAIN="${2:-}"; shift 2 ;;
-        --admin-password)  ADMIN_PASSWORD="${2:-}"; shift 2 ;;
-        --ilo-user)        ILO_USER="${2:-}"; shift 2 ;;
-        --ilo-password)    ILO_PASSWORD="${2:-}"; shift 2 ;;
-        --esxi-password)   ESXI_PASSWORD="${2:-}"; shift 2 ;;
+        --config)          CONFIG_FILE="${2:-}"; shift 2 ;;
+        --server-ip)       SERVER_IP="${2:-}"; SET_BY_FLAG[SERVER_IP]=1; shift 2 ;;
+        --interface)       INTERFACE="${2:-}"; SET_BY_FLAG[INTERFACE]=1; shift 2 ;;
+        --admin-ip)        ADMIN_IP="${2:-}"; SET_BY_FLAG[ADMIN_IP]=1; shift 2 ;;
+        --bmc-interface)   BMC_INTERFACE="${2:-}"; SET_BY_FLAG[BMC_INTERFACE]=1; shift 2 ;;
+        --dhcp-range)      DHCP_START="${2%%-*}"; DHCP_END="${2##*-}"
+                           SET_BY_FLAG[DHCP_START]=1; SET_BY_FLAG[DHCP_END]=1; shift 2 ;;
+        --netmask)         NETMASK="${2:-}"; SET_BY_FLAG[NETMASK]=1; shift 2 ;;
+        --gateway)         GATEWAY="${2:-}"; SET_BY_FLAG[GATEWAY]=1; shift 2 ;;
+        --dns)             DNS="${2:-}"; SET_BY_FLAG[DNS]=1; shift 2 ;;
+        --ntp)             NTP="${2:-}"; SET_BY_FLAG[NTP]=1; shift 2 ;;
+        --domain)          DOMAIN="${2:-}"; SET_BY_FLAG[DOMAIN]=1; shift 2 ;;
+        --admin-password)  ADMIN_PASSWORD="${2:-}"; SET_BY_FLAG[ADMIN_PASSWORD]=1; shift 2 ;;
+        --ilo-user)        ILO_USER="${2:-}"; SET_BY_FLAG[ILO_USER]=1; shift 2 ;;
+        --ilo-password)    ILO_PASSWORD="${2:-}"; SET_BY_FLAG[ILO_PASSWORD]=1; shift 2 ;;
+        --esxi-password)   ESXI_PASSWORD="${2:-}"; SET_BY_FLAG[ESXI_PASSWORD]=1; shift 2 ;;
         --skip-packages)   SKIP_PACKAGES=1; shift ;;
         --yes|-y)          ASSUME_YES=1; shift ;;
         --help|-h)         usage; exit 0 ;;
         *)                 die "Unknown option: $1 (try --help)" ;;
     esac
 done
+
+# --------------------------------------------------------------------------
+# Config file
+# --------------------------------------------------------------------------
+#
+# Read line by line into a whitelist of names, never sourced. This file names
+# addresses and interfaces, and on an appliance that holds the estate's iLO and
+# ESXi credentials it must not also be a way to run commands as root: sourcing
+# it would make every install a code-execution path for whoever can write it.
+#
+# Command-line options win. The file fills what was not given, and prompting
+# still fills whatever is left.
+
+read_config_file() {
+    local file="$1" line key value
+    local -i lineno=0
+
+    [ -f "$file" ] || die "No such config file: $file"
+
+    # Credentials may live here, and a world-readable file holding the root
+    # password of every host this thing installs is worth interrupting for.
+    local mode
+    mode="$(stat -c '%a' "$file" 2>/dev/null || echo '')"
+    case "$mode" in
+        *[24680]|*[13579]) warn "$file is readable by other users (mode $mode); chmod 600 it" ;;
+    esac
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno+=1
+
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || continue
+
+        [[ $line == *=* ]] || die "$file line $lineno: expected KEY=value"
+
+        key="${line%%=*}"
+        value="${line#*=}"
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+
+        # Optional quotes, stripped as a pair.
+        if [[ ( $value == \"*\" || $value == \'*\' ) && ${#value} -ge 2 ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+
+        case "$key" in
+            SERVER_IP|INTERFACE|ADMIN_IP|BMC_INTERFACE|DHCP_START|DHCP_END|NETMASK|\
+            GATEWAY|DNS|NTP|DOMAIN|ADMIN_PASSWORD|ILO_USER|ILO_PASSWORD|ESXI_PASSWORD)
+                # An explicit flag beats the file.
+                if [ -z "${SET_BY_FLAG[$key]:-}" ]; then
+                    printf -v "$key" '%s' "$value"
+                fi
+                ;;
+            DHCP_RANGE)
+                if [ -z "${SET_BY_FLAG[DHCP_START]:-}" ]; then
+                    DHCP_START="${value%%-*}"
+                    DHCP_END="${value##*-}"
+                fi
+                ;;
+            *)
+                die "$file line $lineno: unknown setting '$key'"
+                ;;
+        esac
+    done < "$file"
+
+    info "read settings from $file"
+}
 
 # --------------------------------------------------------------------------
 # Validation helpers
@@ -200,6 +287,10 @@ prompt() {
 # --------------------------------------------------------------------------
 
 step "Checking the environment"
+
+if [ -n "$CONFIG_FILE" ]; then
+    read_config_file "$CONFIG_FILE"
+fi
 
 [ "$(id -u)" = 0 ] || die "Run this as root (sudo ./install.sh)"
 
@@ -307,6 +398,32 @@ if command -v ip >/dev/null 2>&1; then
 fi
 prompt SERVER_IP "This server's address on that network" "$DEFAULT_IP"
 valid_ip "$SERVER_IP" || die "Invalid server address: $SERVER_IP"
+
+# The admin network. This appliance sits on three: admin, the BMC network it
+# scans, and the deploy network the servers boot from. The dashboard holds the
+# iLO administrator account and the ESXi root password for the whole estate, so
+# it answers on this address and no other -- a machine being installed is
+# running code nobody has reviewed yet, and it is on the deploy network.
+#
+# Defaulting to the deploy address keeps a single-NIC lab working, but say so:
+# it is not the arrangement this is built for.
+prompt ADMIN_IP "This server's address on the admin network" "$SERVER_IP"
+valid_ip "$ADMIN_IP" || die "Invalid admin address: $ADMIN_IP"
+
+if [ "$ADMIN_IP" = "$SERVER_IP" ]; then
+    warn "the dashboard and the boot chain share one address ($ADMIN_IP)"
+    note "The admin interface is reachable from the deploy network, because
+       --admin-ip was not given a separate address. On anything but a lab,
+       give this host an admin NIC and re-run with --admin-ip."
+fi
+
+# Only recorded, never bound to: the scanner makes outbound connections and
+# routing decides which interface carries them. Worth having so the installer
+# can say which interface it expects, and so the config file documents all
+# three networks in one place.
+if [ -n "$BMC_INTERFACE" ] && [ ! -d "/sys/class/net/$BMC_INTERFACE" ]; then
+    die "No such interface: $BMC_INTERFACE"
+fi
 
 prompt DHCP_START "First address in the DHCP pool"
 prompt DHCP_END   "Last address in the DHCP pool"
@@ -778,12 +895,12 @@ else
     openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
         -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.crt" \
         -subj "/CN=$HOSTNAME_FQDN" \
-        -addext "subjectAltName=DNS:$HOSTNAME_FQDN,DNS:localhost,IP:$SERVER_IP,IP:127.0.0.1" \
+        -addext "subjectAltName=DNS:$HOSTNAME_FQDN,DNS:localhost,IP:$ADMIN_IP,IP:127.0.0.1" \
         2>/dev/null
     chmod 0640 "$CERT_DIR/server.key"
     chgrp www-data "$CERT_DIR/server.key"
     chmod 0644 "$CERT_DIR/server.crt"
-    info "self-signed certificate for $HOSTNAME_FQDN and $SERVER_IP, valid 10 years"
+    info "self-signed certificate for $HOSTNAME_FQDN and $ADMIN_IP, valid 10 years"
     note "The dashboard uses a self-signed certificate. Replace
        $CERT_DIR/server.{crt,key} with a real one, or trust it once."
 fi
@@ -794,12 +911,26 @@ fi
 
 step "nginx"
 
-# The site config ships with a placeholder socket path; Debian's is versioned.
-sed "s#server unix:/var/run/php/php-fpm.sock;#server unix:${FPM_SOCKET};#" \
+# Three placeholders: the FPM socket (Debian's is versioned) and the two
+# addresses the listeners bind to. Binding matters -- the boot chain answers on
+# the deploy network and the dashboard only on the admin network, and a
+# listener that fell back to every address would put the estate's iLO and ESXi
+# credentials on the network where the un-installed machines live.
+sed -e "s#server unix:/var/run/php/php-fpm.sock;#server unix:${FPM_SOCKET};#" \
+    -e "s#DEPLOY_IP:#${SERVER_IP}:#g" \
+    -e "s#ADMIN_IP:#${ADMIN_IP}:#g" \
     "$ROOT/nginx.conf" > /etc/nginx/sites-available/autodeploy
 
 grep -q "unix:${FPM_SOCKET}" /etc/nginx/sites-available/autodeploy \
     || die "Could not point the site at $FPM_SOCKET; check the upstream block in nginx.conf"
+
+# An unsubstituted placeholder is not a warning. nginx rejects "DEPLOY_IP:80"
+# outright, but a future edit that spelled it differently would silently leave
+# a listener on 0.0.0.0, which is the one failure this whole step exists to
+# prevent -- and it would look like it worked.
+if grep -qE '^\s*listen (DEPLOY_IP|ADMIN_IP):' /etc/nginx/sites-available/autodeploy; then
+    die "A listen address placeholder was not substituted; check nginx.conf"
+fi
 
 ln -sf /etc/nginx/sites-available/autodeploy /etc/nginx/sites-enabled/autodeploy
 
@@ -854,6 +985,10 @@ if [ -f "$ROOT/ipxe/ipxe.efi" ]; then
 
     if [ -f /etc/default/tftpd-hpa ]; then
         sed -i 's#^TFTP_DIRECTORY=.*#TFTP_DIRECTORY="/srv/tftp"#' /etc/default/tftpd-hpa
+        # Debian's default is ":69", which is every interface -- including the
+        # admin one. Nothing outside the deploy network has any business
+        # fetching a bootloader over an unauthenticated protocol.
+        sed -i "s#^TFTP_ADDRESS=.*#TFTP_ADDRESS=\"${SERVER_IP}:69\"#" /etc/default/tftpd-hpa
         systemctl enable --now tftpd-hpa >/dev/null 2>&1 || true
         systemctl restart tftpd-hpa || warn "tftpd-hpa did not start"
         info "TFTP serving /srv/tftp for the UEFI-PXE branch"
@@ -1124,9 +1259,10 @@ fi
 
 cat <<SUMMARY
 
-    Dashboard   https://$SERVER_IP/admin/   (user: admin)
-    API         https://$SERVER_IP/api/v1/hosts
+    Dashboard   https://$ADMIN_IP/admin/    (user: admin, admin network only)
+    API         https://$ADMIN_IP/api/v1/hosts
     Boot chain  http://$SERVER_IP/          DHCP pool $DHCP_START - $DHCP_END on $INTERFACE
+    BMC scan    outbound from ${BMC_INTERFACE:-<routing decides>}, range set under Settings > iLO
 
     Next:
       1. Upload an ESXi ISO under Settings > ESXi Versions. Nothing can be
