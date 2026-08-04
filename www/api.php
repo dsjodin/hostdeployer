@@ -345,7 +345,7 @@ function apiHandleHosts($method, array $rest) {
             apiError('Host not found', 404);
         }
 
-        if (!storeUpdateHost($mac, ['secure_boot_status' => $status])) {
+        if (!storeSetSecureBootStatus($mac, $status)) {
             apiError('Failed to update the host', 500);
         }
 

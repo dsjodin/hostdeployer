@@ -96,8 +96,44 @@ function getRecentLogEntries($globalConfig, $entryCount = 15) {
 }
 
 /**
+ * Hosts that have sat with Secure Boot disabled longer than a deployment takes.
+ *
+ * Every host passes through this state now: the loader iPXE hands out is
+ * unsigned, so Secure Boot has to come off before first boot and only goes
+ * back on when deployment_complete.php reports success. A deployment that
+ * never finished therefore leaves a machine less secure than it was, and the
+ * only evidence is a timestamp nobody reads.
+ *
+ * @param array $hosts        Hosts that are not deployed
+ * @param array $globalConfig Global configuration
+ * @return array<int, array<string, mixed>>
+ */
+function hostsStrandedWithSecureBootOff(array $hosts, $globalConfig) {
+    // The same budget the boot loop gives a host to be approved and install.
+    // Anything past it is not slow, it is stuck.
+    $maxWait = (int)($globalConfig['deployment']['auto_registration']['max_wait_time'] ?? 7200);
+    $cutoff = time() - max(3600, $maxWait);
+
+    $stranded = [];
+
+    foreach ($hosts as $host) {
+        $since = $host['secure_boot_off_since'] ?? '';
+        if (!is_string($since) || $since === '') {
+            continue;
+        }
+
+        $disabledAt = strtotime($since);
+        if ($disabledAt !== false && $disabledAt < $cutoff) {
+            $stranded[] = $host;
+        }
+    }
+
+    return $stranded;
+}
+
+/**
  * Render the Dashboard Tab
- * 
+ *
  * @param array $globalConfig Global configuration
  * @param array $pendingHosts List of pending hosts
  * @param array $approvedHosts List of approved hosts
@@ -113,13 +149,43 @@ function renderDashboardContent($globalConfig, $pendingHosts, $approvedHosts, $d
 
     // Get recent log entries for the activity feed
     $recentLogs = getRecentLogEntries($globalConfig);
+
+    $stranded = hostsStrandedWithSecureBootOff(
+        array_merge($pendingHosts, $approvedHosts, $deployingHosts),
+        $globalConfig
+    );
     ?>
     <div class="row">
         <div class="col-12">
             <h1 class="h3 mb-4 text-gray-800">Deployment Overview</h1>
         </div>
     </div>
-    
+
+    <?php if ($stranded !== []): ?>
+    <div class="row">
+        <div class="col-12">
+            <div class="alert alert-warning">
+                <i class="fas fa-shield-alt me-1"></i>
+                <strong><?php echo count($stranded); ?></strong>
+                host<?php echo count($stranded) === 1 ? ' has' : 's have'; ?>
+                had Secure Boot disabled for longer than a deployment should take,
+                and <?php echo count($stranded) === 1 ? 'is' : 'are'; ?> not deployed:
+                <?php echo h(implode(', ', array_map(
+                    static function ($host) {
+                        return ($host['hostname'] ?? '') !== ''
+                            ? $host['hostname']
+                            : formatMac($host['mac_address'] ?? '');
+                    },
+                    array_slice($stranded, 0, 10)
+                ))); ?><?php echo count($stranded) > 10 ? ', ...' : ''; ?>.
+                Secure Boot is turned off so the unsigned iPXE loader can start, and
+                turned back on when the deployment reports success -- so these either
+                never finished or never began.
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <div class="row mb-4">
         <div class="col-lg-6">
             <div class="card shadow">

@@ -103,7 +103,7 @@ try {
     sleep(10);
 
     if (enableSecureBoot($mac)) {
-        storeUpdateHost($mac, ['secure_boot_status' => 'enabled']);
+        storeSetSecureBootStatus($mac, 'enabled');
         deployLog("Successfully re-enabled secure boot for $mac");
         exit('SUCCESS: deployment complete and secure boot enabled');
     }

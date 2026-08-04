@@ -239,6 +239,13 @@ if ($host === null) {
 $hostname = $host['hostname'] ?? 'unknown';
 $deploymentStatus = $host['deployment_status'] ?? 'unknown';
 
+// Every request, including the ones that go on to be refused. A host polling
+// this endpoint while it waits for approval is the whole reason the retry loop
+// exists, and last_seen is how the rest of the system knows it is doing so:
+// approving a host that is already waiting must not power-cycle it, because it
+// will pick up the real boot chain on its next poll by itself.
+storeTouchHost($mac);
+
 $gate = bootGateGetDecision($deploymentStatus);
 
 if ($gate === BOOT_GATE_DEPLOYED) {

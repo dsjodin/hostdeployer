@@ -479,6 +479,46 @@ if (!function_exists('storeAttachMac')) {
     }
 }
 
+if (!function_exists('storeSetSecureBootStatus')) {
+    /**
+     * Record a host's Secure Boot state, and how long it has been off.
+     *
+     * Every host passes through Secure Boot disabled now -- the loader iPXE
+     * hands out is unsigned, so it has to come off before first boot and only
+     * goes back on when the deployment reports success. That makes a host left
+     * disabled a thing worth finding, which needs a date.
+     *
+     * One function because there are three callers -- the REST route the
+     * helper scripts use, the admin UI's toggle, and the completion callback
+     * -- and a rule about when the clock starts is exactly the kind of thing
+     * that ends up spelled three slightly different ways.
+     *
+     * @param string $mac    Host MAC
+     * @param string $status enabled, disabled or unknown
+     * @return bool
+     */
+    function storeSetSecureBootStatus($mac, $status) {
+        $host = storeFindHost($mac);
+        if ($host === null) {
+            return false;
+        }
+
+        $fields = ['secure_boot_status' => $status];
+
+        if ($status !== 'disabled') {
+            $fields['secure_boot_off_since'] = null;
+        } elseif (($host['secure_boot_off_since'] ?? '') === '') {
+            // Stamped on the way in only. Re-reporting a state a host is
+            // already in -- which re-running the helper does -- must not reset
+            // the clock, or a host stuck disabled looks freshly disabled
+            // forever and never shows up as stranded.
+            $fields['secure_boot_off_since'] = date('Y-m-d H:i:s');
+        }
+
+        return storeUpdateHost($mac, $fields);
+    }
+}
+
 if (!function_exists('storeMutateHosts')) {
     /**
      * Run a mutation over the whole host list inside one transaction.
@@ -804,10 +844,28 @@ if (!function_exists('storeMergeDiscoveredHosts')) {
                     }
                 }
 
+                // The scan stages Secure Boot off so the unsigned ipxe.efi can
+                // load. That state has to be dated, because every host passes
+                // through it and one whose deployment never finished is left
+                // there with nothing watching. Same rule as the API route:
+                // stamp on the way in only, so a re-scan does not reset it.
+                $goingOff = ($result['secure_boot_status'] ?? '') === 'disabled';
+
                 if ($match === null) {
+                    if ($goingOff) {
+                        $result['secure_boot_off_since'] = date('Y-m-d H:i:s');
+                    }
                     $hosts[] = $result;
                     $added++;
                     continue;
+                }
+
+                if ($goingOff) {
+                    if (empty($hosts[$match]['secure_boot_off_since'])) {
+                        $hosts[$match]['secure_boot_off_since'] = date('Y-m-d H:i:s');
+                    }
+                } elseif (!empty($result['secure_boot_status'])) {
+                    $hosts[$match]['secure_boot_off_since'] = null;
                 }
 
                 foreach (['ilo_ip', 'model', 'manufacturer', 'bios_version',

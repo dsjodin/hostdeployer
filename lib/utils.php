@@ -814,6 +814,77 @@ if (!function_exists('runSecureBootManager')) {
     }
 }
 
+if (!function_exists('runNetworkBoot')) {
+    /**
+     * Invoke scripts/network_boot.py to boot a host from the network once.
+     *
+     * @param string $macAddress MAC address of the host
+     * @return array{success: bool, output: string}
+     */
+    function runNetworkBoot($macAddress) {
+        $mac = formatMac($macAddress);
+        if ($mac === '') {
+            return ['success' => false, 'output' => 'Invalid MAC address'];
+        }
+
+        $command = sprintf(
+            '%spython3 %s --mac %s 2>&1',
+            apiLocalTokenEnv(),
+            escapeshellarg(AUTODEPLOY_ROOT . '/scripts/network_boot.py'),
+            escapeshellarg($mac)
+        );
+
+        $output = [];
+        $returnCode = 1;
+        exec($command, $output, $returnCode);
+
+        $outputStr = implode("\n", $output);
+
+        if ($returnCode === 0) {
+            logMessage("Network boot requested for $mac");
+        } else {
+            logMessage("Network boot failed for $mac: " . str_replace("\n", ' | ', $outputStr), 'ERROR');
+        }
+
+        return ['success' => $returnCode === 0, 'output' => $outputStr];
+    }
+}
+
+if (!function_exists('hostIsWaitingForApproval')) {
+    /**
+     * Whether a host is currently sitting in the iPXE retry loop.
+     *
+     * boot.ipxe.php touches last_seen on every request, including the refused
+     * ones, so a host that is polling has a timestamp only a retry interval
+     * old. Such a host needs nothing done to it when it is approved: the next
+     * poll hands it the real boot chain.
+     *
+     * The window is two intervals rather than one because the poll and the
+     * approval are not synchronised, and rebooting a host that was about to
+     * boot on its own is worse than not rebooting one that has stopped.
+     *
+     * @param array<string, mixed> $host         Host record
+     * @param array<string, mixed> $globalConfig Global configuration
+     * @return bool
+     */
+    function hostIsWaitingForApproval(array $host, array $globalConfig) {
+        $lastSeen = $host['last_seen'] ?? '';
+        if (!is_string($lastSeen) || $lastSeen === '') {
+            return false;
+        }
+
+        $seenAt = strtotime($lastSeen);
+        if ($seenAt === false) {
+            return false;
+        }
+
+        $retryInterval = (int)($globalConfig['deployment']['auto_registration']['retry_interval'] ?? 60);
+        $window = max(30, $retryInterval) * 2;
+
+        return (time() - $seenAt) <= $window;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Misc formatting
 // ---------------------------------------------------------------------------

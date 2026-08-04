@@ -97,8 +97,9 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                         
                         <div class="row">
                             <div class="col-md-6 mb-3">
-                                <label for="ilo_ip" class="form-label">iLO IP Address:</label>
-                                <input type="text" class="form-control" id="ilo_ip" name="ilo_ip" placeholder="192.168.1.100">
+                                <label for="ilo_ip" class="form-label">iLO Address:</label>
+                                <input type="text" class="form-control" id="ilo_ip" name="ilo_ip"
+                                       placeholder="orbesx1001-ilo.dc.infra">
                             </div>
                         </div>
                         
@@ -312,7 +313,17 @@ function renderHostsContent($globalConfig, $pendingHosts, $approvedHosts, $deplo
                                             </button>
                                         </form>
                                         <?php endif; ?>
-                                        
+
+                                        <?php if (($host['ilo_ip'] ?? '') !== ''): ?>
+                                        <form method="post" style="display: inline"><?php echo csrfField(); ?>
+                                            <input type="hidden" name="action" value="network_boot">
+                                            <input type="hidden" name="mac" value="<?php echo h(formatMac($host['mac_address'])); ?>">
+                                            <button type="submit" class="btn btn-secondary" data-confirm="Boot this host from the network now? It will be powered on, or restarted if it is already running.">
+                                                <i class="fas fa-network-wired"></i> Net Boot
+                                            </button>
+                                        </form>
+                                        <?php endif; ?>
+
                                         <button class="btn btn-danger" data-delete-host="<?php echo jsValue(['mac' => formatMac($host['mac_address']), 'hostname' => $host['hostname'] ?? '']); ?>">
                                             <i class="fas fa-trash-alt"></i> Delete
                                         </button>
@@ -688,6 +699,11 @@ function processHostsActions($action, $postData) {
        case 'toggle_secure_boot':
            // Toggle secure boot status
            $result = processSecureBootAction($postData);
+           break;
+
+       case 'network_boot':
+           // Set a one-time network boot and power the host
+           $result = processNetworkBootAction($postData);
            break;
            
        case 'approve_host':

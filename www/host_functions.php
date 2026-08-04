@@ -111,9 +111,13 @@ function validateHostNetworkInput(array $postData, $requireGateway = true) {
         }
     }
 
-    $iloIp = trim((string)($postData['ilo_ip'] ?? ''));
-    if ($iloIp !== '' && !isValidIpv4($iloIp)) {
-        return 'Invalid iLO IP address';
+    // A hostname or an address. The scan stores what the BMC's PTR record
+    // says, because Infoblox owns the BMC network and a card can come back on
+    // a different address -- so the name is the stable identifier and an
+    // IPv4-only rule here rejected every host discovery had just registered.
+    $iloAddress = trim((string)($postData['ilo_ip'] ?? ''));
+    if ($iloAddress !== '' && !isValidIpv4($iloAddress) && !isValidHostname($iloAddress)) {
+        return 'Invalid iLO address';
     }
 
     return '';
@@ -305,9 +309,52 @@ function processSecureBootAction($postData) {
 
     // secure_boot_manager.py already records the new status; refresh it here
     // too so the dashboard is correct even if the script's write raced.
-    storeUpdateHost($mac, ['secure_boot_status' => $enable ? 'enabled' : 'disabled']);
+    storeSetSecureBootStatus($mac, $enable ? 'enabled' : 'disabled');
 
     $result['message'] = 'Secure boot ' . ($enable ? 'enabled' : 'disabled') . " for host with MAC '$mac'";
+
+    return $result;
+}
+
+/**
+ * Boot a host from the network on its next power cycle.
+ *
+ * The manual counterpart to what approval does automatically, for a host that
+ * was approved while it was powered off, or one that gave up waiting and fell
+ * through to its local disk.
+ *
+ * @param array $postData Form data from POST
+ * @return array{message: string, error: string, scanOutput: string}
+ */
+function processNetworkBootAction($postData) {
+    $result = ['message' => '', 'error' => '', 'scanOutput' => ''];
+
+    $mac = formatMac($postData['mac'] ?? '');
+    if ($mac === '') {
+        $result['error'] = 'A valid MAC address is required';
+        return $result;
+    }
+
+    $host = storeFindHost($mac);
+    if ($host === null) {
+        $result['error'] = "Host with MAC '$mac' not found";
+        return $result;
+    }
+
+    if (($host['ilo_ip'] ?? '') === '') {
+        $result['error'] = 'No iLO address is recorded for this host';
+        return $result;
+    }
+
+    $boot = runNetworkBoot($mac);
+
+    if (!$boot['success']) {
+        $result['error'] = 'Could not set a network boot for this host';
+        $result['scanOutput'] = $boot['output'];
+        return $result;
+    }
+
+    $result['message'] = "Host '$mac' will boot from the network";
 
     return $result;
 }
@@ -399,6 +446,30 @@ function processApproveHostAction($postData) {
 
     logMessage("Approved host $hostname ($mac) for deployment");
     $result['message'] = "Host with MAC '$mac' approved for deployment";
+
+    // A host already polling boot.ipxe.php needs nothing: its next request
+    // passes the gate and it starts installing. Anything else has to be told
+    // to boot, which means the BMC.
+    //
+    // Never fatal. The approval is already recorded, and an operator who has
+    // to power the machine on by hand is in a better position than one whose
+    // approval silently rolled back because a BMC was unreachable.
+    $globalConfig = loadJsonConfig(AUTODEPLOY_GLOBAL_CONFIG) ?? [];
+
+    if (hostIsWaitingForApproval($existing, $globalConfig)) {
+        $result['message'] .= '. It is waiting in the boot loop and will start on its next poll.';
+    } elseif (($existing['ilo_ip'] ?? '') === '') {
+        $result['message'] .= '. No iLO address is recorded, so boot it from the network by hand.';
+    } else {
+        $boot = runNetworkBoot($mac);
+
+        if ($boot['success']) {
+            $result['message'] .= '. It has been set to boot from the network.';
+        } else {
+            $result['message'] .= '. It could not be booted from the network automatically'
+                . ' -- see the network_boot log.';
+        }
+    }
 
     return $result;
 }
